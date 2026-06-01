@@ -1,0 +1,25 @@
+# Secrets — NEVER commit
+.env
+*.env
+!.env.example
+
+# Logs
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+venv/
+.venv/
+env/
+
+# Editor / backup files
+*.bak
+*.patch_backup
+*~
+.DS_Store
+
+# Runtime data (game stats written by the bot)
+data/*.json

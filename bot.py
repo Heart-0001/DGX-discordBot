@@ -24,7 +24,7 @@ intents.message_content = True
 intents.voice_states = True
 
 bot = commands.Bot(command_prefix='!', intents=intents)
-EXTENSIONS = ('cogs.music', 'cogs.bigtwo', 'cogs.uno')
+EXTENSIONS = ('cogs.music', 'cogs.bigtwo', 'cogs.uno', 'cogs.health')
 
 
 bot.start_time = datetime.now(timezone.utc)

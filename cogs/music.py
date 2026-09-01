@@ -4,6 +4,7 @@ import logging
 import random
 import re
 import shutil
+import time
 import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -30,12 +31,15 @@ _PENALIZED = re.compile(
 )
 
 
-def make_source(url: str, volume: float) -> discord.PCMVolumeTransformer:
+def make_source(url: str, volume: float, seek: float = 0.0) -> discord.PCMVolumeTransformer:
+    before = FFMPEG_BEFORE_OPTS
+    if seek > 0.3:
+        before = f'{FFMPEG_BEFORE_OPTS} -ss {seek:.3f}'  # 斷點續播:輸入定位,從 seek 秒開始
     return discord.PCMVolumeTransformer(
         discord.FFmpegPCMAudio(
             url,
             executable=FFMPEG_PATH,
-            before_options=FFMPEG_BEFORE_OPTS,
+            before_options=before,
             options=FFMPEG_OPTS,
         ),
         volume=volume,
@@ -52,6 +56,11 @@ class GuildMusicState:
     history: list[str] = field(default_factory=list)
     history_titles: set[str] = field(default_factory=set)
     autoplay_prefetch: Optional[dict] = None
+    repeat: str = 'off'   # 'off' | 'one' | 'all'
+    repeat_skip: bool = False  # True for one cycle when user explicitly skips
+    want_voice: bool = False   # watchdog: 有在播/想繼續 → True;被斷線時自動重連
+    voice_channel_id: Optional[int] = None  # watchdog: 應該要連的 voice channel
+    current_started_mono: float = 0.0       # 斷點續播:目前這曲开播的 monotonic 時間戳
 
 
 class MusicCog(commands.Cog):
@@ -59,6 +68,9 @@ class MusicCog(commands.Cog):
         self.bot = bot
         self._states: dict[int, GuildMusicState] = {}
         self._ytm = YTMusic()  # 不需要登入，搜尋 + radio 皆可用
+        # ── voice watchdog ──
+        self._manual_discard: set[int] = set()   # 被 /disconnect 過的 guild,別自動拉回
+        self._watchdog_task = None               # asyncio.Task
 
     def get_state(self, guild_id: int) -> GuildMusicState:
         return self._states.setdefault(guild_id, GuildMusicState())
@@ -128,11 +140,16 @@ class MusicCog(commands.Cog):
         song: dict,
         *,
         prefetch_queued: bool = False,
+        seek: float = 0.0,
     ):
         state.current = song
-        source = make_source(song['url'], state.volume)
+        if voice_client.channel is not None:
+            state.want_voice = True
+            state.voice_channel_id = voice_client.channel.id
+        source = make_source(song['url'], state.volume, seek=seek)
+        state.current_started_mono = time.monotonic()   # 記下這曲的起播時點(供斷點續播)
         voice_client.play(source, after=lambda e: self._after_play(e, guild_id, voice_client))
-        log.info(f'開始播放: {song["title"]}')
+        log.info(f'開始播放: {song["title"]}' + (f' (續播 @ {seek:.0f}s)' if seek > 0.5 else ''))
         self._remember_played(state, song)
         self._schedule_prefetch(guild_id, state, queued=prefetch_queued)
 
@@ -372,6 +389,29 @@ class MusicCog(commands.Cog):
 
         state = self.get_state(guild_id)
 
+        # Repeat 處理
+        if state.current:
+            # repeat one：用戶主動 skip 時繞過，直接播下一首
+            if state.repeat == 'one' and not state.repeat_skip:
+                song = dict(state.current)
+                song['url'] = ''  # 重新抓串流 URL，避免過期
+                try:
+                    await self._ensure_stream_url(song)
+                    self._start_song(guild_id, voice_client, state, song)
+                except Exception as e:
+                    log.error(f'Repeat one 失敗，繼續下一首: {e}')
+                    # fall through 到正常邏輯
+                else:
+                    state.repeat_skip = False
+                    return
+            # repeat all：不論 skip 與否都放回隊列尾部
+            elif state.repeat == 'all':
+                requeue = dict(state.current)
+                requeue['url'] = ''  # 下次播到時再抓
+                state.queue.append(requeue)
+
+        state.repeat_skip = False
+
         # 隊列空了且 autoplay 開啟
         if not state.queue and state.autoplay and state.current:
             if state.autoplay_prefetch:
@@ -595,7 +635,9 @@ class MusicCog(commands.Cog):
     async def skip(self, interaction: discord.Interaction):
         vc = interaction.guild.voice_client
         if vc and (vc.is_playing() or vc.is_paused()):
-            self.get_state(interaction.guild_id).autoplay_prefetch = None
+            state = self.get_state(interaction.guild_id)
+            state.autoplay_prefetch = None
+            state.repeat_skip = True  # 繞過 repeat one，強制播下一首
             vc.stop()
             await interaction.response.send_message('⏭️ 已跳過')
         else:
@@ -744,6 +786,23 @@ class MusicCog(commands.Cog):
 
         await interaction.response.send_message(msg)
 
+    @app_commands.command(name='repeat', description='切換循環模式（off → one → all → off）')
+    async def repeat(self, interaction: discord.Interaction):
+        vc = interaction.guild.voice_client
+        state = self.get_state(interaction.guild_id)
+
+        if not (vc and (vc.is_playing() or vc.is_paused())):
+            await interaction.response.send_message(
+                '❌ 目前沒有在播放音樂，請先用 `/play` 播放歌曲', ephemeral=True
+            )
+            return
+
+        cycle = {'off': 'one', 'one': 'all', 'all': 'off'}
+        state.repeat = cycle[state.repeat]
+
+        labels = {'off': '❌ 關閉', 'one': '🔂 單曲循環', 'all': '🔁 全部循環'}
+        await interaction.response.send_message(f'循環模式：**{labels[state.repeat]}**')
+
     @app_commands.command(name='autoplay', description='開啟/關閉自動播放（根據當前歌曲推薦）')
     async def autoplay(self, interaction: discord.Interaction):
         state = self.get_state(interaction.guild_id)
@@ -811,6 +870,8 @@ class MusicCog(commands.Cog):
         embed.add_field(name='📋 Queue 歌曲數', value=f'{q_count} 首')
         embed.add_field(name='⏱️ Queue 剩餘時長', value=q_dur_str)
         embed.add_field(name='🔀 Autoplay', value='開啟 ✅' if state.autoplay else '關閉 ❌')
+        repeat_labels = {'off': '關閉 ❌', 'one': '單曲循環 🔂', 'all': '全部循環 🔁'}
+        embed.add_field(name='🔁 Repeat', value=repeat_labels[state.repeat])
 
         embed.set_footer(text=f'查詢時間：{datetime.now(timezone.utc).strftime("%H:%M:%S")} UTC')
         await interaction.response.send_message(embed=embed)
@@ -823,6 +884,10 @@ class MusicCog(commands.Cog):
             state.queue.clear()
             state.current = None
             state.autoplay_prefetch = None
+            state.want_voice = False
+            state.voice_channel_id = None
+            if interaction.guild_id is not None:
+                self._manual_discard.add(interaction.guild_id)  # 別讓 watchdog 又把她拉回來
             state.history.clear()
             state.history_titles.clear()
             vc.stop()
@@ -831,6 +896,94 @@ class MusicCog(commands.Cog):
         else:
             await interaction.response.send_message('❌ Bot 不在語音頻道中', ephemeral=True)
 
+    # ── Voice watchdog：斷線自動重連 ──────────────────────────
+    WATCHDOG_MAX_ATTEMPTS = 10
+    WATCHDOG_BASE_DELAY = 10.0     # 秒
+    WATCHDOG_MAX_DELAY = 250.0     # 秒(約 4 分鐘)
+
+    def _start_watchdog(self):
+        if self._watchdog_task is None:
+            self._watchdog_task = asyncio.ensure_future(self._watchdog_loop())
+            log.info('🔁 Voice watchdog 已啟動')
+
+    async def _watchdog_loop(self):
+        """每 3 秒檢查一次:還想播,但語音掉線 → 指數退避重連。"""
+        attempts: dict = {}
+        while True:
+            await asyncio.sleep(3)
+            for guild_id in list(self._states.keys()):
+                state = self._states.get(guild_id)
+                if state is None or not state.want_voice:
+                    continue
+                if guild_id in self._manual_discard:
+                    continue
+                guild = self.bot.get_guild(guild_id)
+                if guild is None:
+                    continue
+                if guild.voice_client is not None and guild.voice_client.is_connected():
+                    attempts[guild_id] = 0
+                    continue
+                # 掉線且沒目標頻道 → 無從重連,放棄
+                if state.voice_channel_id is None:
+                    continue
+                channel = self.bot.get_channel(state.voice_channel_id)
+                if channel is None or not isinstance(channel, discord.VoiceChannel):
+                    continue
+                n = attempts.get(guild_id, 0)
+                if n >= self.WATCHDOG_MAX_ATTEMPTS:
+                    continue
+                attempts[guild_id] = n + 1
+                delay = min(self.WATCHDOG_BASE_DELAY * (2 ** n), self.WATCHDOG_MAX_DELAY)
+                log.warning(
+                    f'🔁 Voice 斷線 [{guild.name}] attempt {n + 1}/{self.WATCHDOG_MAX_ATTEMPTS}, '
+                    f'{delay:.0f}s 後重連'
+                )
+                await asyncio.sleep(delay)
+                try:
+                    # 斷點續播:重連前記下目前這曲已播的秒數
+                    resume_at = 0.0
+                    cur = state.current
+                    if cur is not None and state.current_started_mono > 0:
+                        resume_at = max(0.0, time.monotonic() - state.current_started_mono)
+                        if (cur.get('duration') and cur['duration'] > 0 and
+                                resume_at >= cur['duration'] - 3):
+                            resume_at = 0.0   # 已播到快結束,直接換下一首
+                    old = guild.voice_client
+                    if old is not None:
+                        try:
+                            old.stop()
+                        except Exception:
+                            pass
+                        try:
+                            await old.disconnect()
+                        except Exception:
+                            pass
+                    client = await channel.connect()
+                    log.info(f'✅ Voice 重連成功 [{guild.name}] → {channel.name}')
+                    attempts[guild_id] = 0
+                    # 重連後重新掛上當前/下一首歌
+                    state = self.get_state(guild_id)
+                    if state.current is not None and resume_at > 0.5:
+                        song = dict(state.current)
+                        song['url'] = ''  # 舊串流 URL 多半已失效,重新抓
+                        try:
+                            await self._ensure_stream_url(song)
+                        except Exception as e:
+                            log.error(f'重連後重取 URL 失敗,改播下一首: {e}')
+                            song = None
+                        if song is not None:
+                            self._start_song(guild_id, client, state, song, seek=resume_at)
+                            continue
+                    if state.queue:
+                        await self._play_next(guild_id, client)
+                except Exception as e:
+                    log.error(f'❌ Voice 重連失敗 [{guild.name}]: {e}')
+
 
 async def setup(bot: commands.Bot):
-    await bot.add_cog(MusicCog(bot))
+    cog = MusicCog(bot)
+    # 初始化 watchdog 專屬欄位
+    cog._manual_discard = set()
+    cog._watchdog_task = None
+    await bot.add_cog(cog)
+    cog._start_watchdog()

@@ -6,8 +6,10 @@ import re
 import shutil
 import time
 import sys
+from collections.abc import Set as _AbstractSet
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from functools import partial
 from typing import Optional
 
 import discord
@@ -56,6 +58,7 @@ class GuildMusicState:
     history: list[str] = field(default_factory=list)
     history_titles: set[str] = field(default_factory=set)
     autoplay_prefetch: Optional[dict] = None
+    autoplay_lock: Optional[asyncio.Lock] = field(default=None, repr=False)  # #3 併發保護
     repeat: str = 'off'   # 'off' | 'one' | 'all'
     repeat_skip: bool = False  # True for one cycle when user explicitly skips
     want_voice: bool = False   # watchdog: 有在播/想繼續 → True;被斷線時自動重連
@@ -64,10 +67,21 @@ class GuildMusicState:
 
 
 class MusicCog(commands.Cog):
+    YTM_TIMEOUT = (10, 20)  # (connect, read) 秒——YT 回應慢也不該卡死播放
+
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self._states: dict[int, GuildMusicState] = {}
-        self._ytm = YTMusic()  # 不需要登入，搜尋 + radio 皆可用
+        # 用公開入口 requests_session 餵一個內建 timeout 的 session（ytmusicapi 1.12
+        # _prepare_session 的官方做法），避免網路卡死時 innertube / yt_dlp 無限等待。
+        import requests
+        session = requests.Session()
+        session.request = partial(session.request, timeout=self.YTM_TIMEOUT)  # type: ignore[method-assign]
+        self._ytm = YTMusic(requests_session=session)
+        if getattr(self._ytm, '_send_request', None) is None:
+            # 私有 API 若消失，autoplay 會全掛；提前告警，別等上線才炸
+            log.warning('ytmusicapi 缺少 _send_request —— autoplay 推薦會不可用，'
+                        '請確認 requirements.txt 的 ytmusicapi 版本')
         # ── voice watchdog ──
         self._manual_discard: set[int] = set()   # 被 /disconnect 過的 guild,別自動拉回
         self._watchdog_task = None               # asyncio.Task
@@ -125,6 +139,10 @@ class MusicCog(commands.Cog):
                 state.history.pop(0)
         if song.get('title'):
             state.history_titles.add(song['title'].lower().strip())
+            # #8: 上界，避免長播 session 把 set 撐爆 / 永遠濾掉所有候選
+            if len(state.history_titles) > 400:
+                keep = list(state.history_titles)[len(state.history_titles) // 2:]
+                state.history_titles = set(keep)
 
     def _schedule_prefetch(self, guild_id: int, state: GuildMusicState, *, queued: bool = False):
         if state.autoplay and not state.queue and not state.autoplay_prefetch:
@@ -333,23 +351,126 @@ class MusicCog(commands.Cog):
         m = re.search(r'(?:v=|youtu\.be/)([a-zA-Z0-9_-]{11})', url or '')
         return m.group(1) if m else url
 
-    async def _get_autoplay_songs(self, webpage_url: str, history_titles: set[str]) -> list[dict]:
-        """用 ytmusicapi get_watch_playlist(radio=True) 取得 YTMusic 推薦清單。"""
+    @staticmethod
+    def _runs_text(runs) -> str:
+        """把 innertube 的 {'runs': [{'text': ...}]} 拼成純文字。"""
+        if not runs:
+            return ''
+        if isinstance(runs, str):
+            return runs
+        return ''.join(r.get('text', '') for r in runs if isinstance(r, dict))
+
+    def _parse_duration(self, text) -> int:
+        """'m:ss' / 'h:mm:ss' → 秒。解析不出就回 0。"""
+        m = re.fullmatch(r'(?:(\d+):)?(\d{1,2}):(\d{2})', (text or '').strip())
+        if not m:
+            return 0
+        h = int(m.group(1) or 0)
+        return h * 3600 + int(m.group(2)) * 60 + int(m.group(3))
+
+    def _parse_innertube_radio(self, data: dict, video_id: str) -> list[dict]:
+        """從 innertube 'next' 回應抓 Up-next radio 清單。
+        確認好用的路徑 (YT Music 2026 版面):
+          contents.singleColumnMusicWatchNextResultsRenderer.tabbedRenderer
+            .watchNextTabbedResultsRenderer.tabs[0].tabRenderer.content
+            .musicQueueRenderer.content.playlistPanelRenderer.contents
+        """
+        try:
+            panel = (data['contents']['singleColumnMusicWatchNextResultsRenderer']
+                     ['tabbedRenderer']['watchNextTabbedResultsRenderer']
+                     ['tabs'][0]['tabRenderer']['content']
+                     ['musicQueueRenderer']['content']['playlistPanelRenderer'])
+            items = panel.get('contents', [])
+        except (KeyError, IndexError, TypeError):
+            return []
+        out = []
+        for it in items:
+            try:
+                if not isinstance(it, dict):
+                    continue
+                ppvr = it.get('playlistPanelVideoRenderer')
+                if not ppvr:
+                    continue
+                vid = ppvr.get('videoId')
+                if not vid or vid == video_id:   # 跳過目前正在播的那首
+                    continue
+                title_raw = ppvr.get('title')
+                title = (self._runs_text(title_raw.get('runs')) or title_raw.get('simpleText', '')
+                         if isinstance(title_raw, dict) else (title_raw or ''))
+                if not title:
+                    continue
+                # 藝人 = byline 第一個 run（後面是 '• 205M views • …'）
+                lbt = ppvr.get('longBylineText') or {}
+                runs = lbt.get('runs') if isinstance(lbt, dict) else None
+                uploader = runs[0].get('text', '') if runs and isinstance(runs[0], dict) else ''
+                thumb = ''
+                th = ppvr.get('thumbnail')
+                if isinstance(th, dict):
+                    thumbs = th.get('thumbnails') or []
+                    if thumbs and isinstance(thumbs[-1], dict) and 'url' in thumbs[-1]:
+                        thumb = thumbs[-1]['url']
+                lt = ppvr.get('lengthText')
+                dur_text = (self._runs_text(lt.get('runs')) or lt.get('simpleText', '')
+                            if isinstance(lt, dict) else (lt or ''))
+                out.append({
+                    'url': '',
+                    'webpage_url': f'https://www.youtube.com/watch?v={vid}',
+                    'title': title,
+                    'duration': self._parse_duration(dur_text),
+                    'thumbnail': thumb,
+                    'uploader': uploader,
+                })
+            except (KeyError, TypeError, IndexError):
+                continue   # 單一畸形 item 不該拖垮整批
+        return out
+
+    async def _get_autoplay_songs(
+        self,
+        webpage_url: str,
+        history_titles: set[str],
+        exclude: _AbstractSet[str] = frozenset(),
+    ) -> list[dict]:
+        """Autoplay 推薦：直接打 innertube 抓 Up-next radio 清單。
+        不能用 ytmusicapi.get_watch_playlist()——YT Music 後端改版後它內部
+        get_tab_browse_id 會 KeyError:'endpoint' 直接炸，那条路已經死了。
+
+        `exclude` 是**硬排除**（/skipautoplay 剛跳的那首）——連 fallback 都不放行；
+        `history_titles` 是軟過濾，fallback 時允許重放老歌。
+        """
         match = re.search(r'(?:v=|youtu\.be/)([a-zA-Z0-9_-]{11})', webpage_url)
         if not match:
             return []
         video_id = match.group(1)
+        excl = {t.lower().strip() for t in exclude}
         try:
+            body = {
+                "enablePersistentPlaylistPanel": True,
+                "isAudioOnly": True,
+                "tunerSettingValue": "AUTOMIX_SETTING_NORMAL",
+                "videoId": video_id,
+                "playlistId": "RDAMVM" + video_id,
+                "params": "wAEB",  # radio
+            }
             loop = asyncio.get_running_loop()
-            data = await loop.run_in_executor(
-                None,
-                lambda: self._ytm.get_watch_playlist(videoId=video_id, radio=True, limit=10),
+            data = await asyncio.wait_for(
+                loop.run_in_executor(
+                    None, lambda: self._ytm._send_request("next", body),
+                ),
+                timeout=25,
             )
-            # tracks[0] 是目前在播的歌，從 [1:] 開始才是推薦
-            tracks = (data or {}).get('tracks', [])[1:]
-            candidates = [self._ytm_track_to_dict(r) for r in tracks]
-            candidates = [c for c in candidates if c]
-            # 標題比對歷史，過濾掉已播過的
+            candidates = self._parse_innertube_radio(data, video_id)
+            if not candidates:
+                log.warning('Autoplay: innertube 回傳無可用推薦 (版式可能又變)')
+                return []
+            log.info(f'Autoplay 候選: {[c["title"] for c in candidates[:5]]}')
+            # 硬排除：使用者明確跳過的
+            candidates = [
+                s for s in candidates
+                if s['title'].lower().strip() not in excl
+            ]
+            if not candidates:
+                return []   # 全是剛跳的，寧缺勿濫（寧可這次不接）
+            # 軟過濾：歷史播過的，但 fallback 時允許重放（避免卡死）
             filtered = [s for s in candidates if s['title'].lower().strip() not in history_titles]
             result = filtered if filtered else candidates
             return result[:1]
@@ -357,31 +478,56 @@ class MusicCog(commands.Cog):
             log.error(f'Autoplay 取得推薦失敗: {e}')
             return []
 
-    async def _prefetch_autoplay(self, guild_id: int):
+    def _get_autoplay_lock(self, state: GuildMusicState) -> asyncio.Lock:
+        # 單一 event loop 上 first-use 建鎖即原子(asyncio.Lock() 建構沒有 await)
+        if state.autoplay_lock is None:
+            state.autoplay_lock = asyncio.Lock()
+        return state.autoplay_lock
+
+    async def _prefetch_autoplay(
+        self, guild_id: int, *, exclude_titles: _AbstractSet[str] = frozenset()
+    ) -> Optional[dict]:
         """趁目前歌曲還在播，背景預載下一首 autoplay（含串流 URL）。
-        推薦直接來自 ytmusicapi get_watch_playlist(radio=True)，不需要二次搜尋。
+        推薦直接打 innertube 抓 Up-next radio，不需要二次搜尋。
+
+        #3 併發保護: 整段(抓推薦→抓串流 URL→寫回 state)在 lock 下執行，
+        避免 /skipautoplay 與播放結束觸發的 prefetch 同時抓兩首。
+        #4 寫回前復核: await 期間使用者可能已 /stop 或切歌，避免留下幽靈曲。
+        回傳成功設定的 prefetch song（讓 caller 不必再回讀 state，避開競態）。
         """
         state = self.get_state(guild_id)
-        if state.autoplay_prefetch:
-            return  # 已有預載，不重複
-        if not state.current:
-            return  # 歌已停止，不需要預載
-        try:
-            # 1. 從 YTMusic 取得推薦
-            candidates = await self._get_autoplay_songs(
-                state.current['webpage_url'], state.history_titles
-            )
-            if not candidates:
-                return
-            song = candidates[0]
-            log.info(f'Autoplay 預載: {song["title"]}')
+        result: Optional[dict] = None
+        async with self._get_autoplay_lock(state):
+            if state.autoplay_prefetch:
+                return  # 已有預載，不重複
+            if not state.autoplay or not state.current:
+                return  # 已關或由 /stop 清空
+            seed_url = state.current['webpage_url']
+            try:
+                # 1. 從 YTMusic 取得推薦
+                candidates = await self._get_autoplay_songs(
+                    seed_url, state.history_titles, exclude=set(exclude_titles)
+                )
+                if not candidates:
+                    return
+                song = candidates[0]
+                log.info(f'Autoplay 預載: {song["title"]}')
 
-            # 2. 抓串流 URL
-            song['url'] = await self.fetch_stream_url(song['webpage_url'])
-            state.autoplay_prefetch = song
-            log.info(f'Autoplay 預載完成: {song["title"]}')
-        except Exception as e:
-            log.error(f'Autoplay 預載失敗: {e}')
+                # 2. 抓串流 URL
+                song['url'] = await self.fetch_stream_url(song['webpage_url'])
+
+                # 4. 寫回前復核狀態（await 期間可能已 /stop / 切歌 / 關閉）
+                if (not state.autoplay or state.current is None
+                        or state.current.get('webpage_url') != seed_url
+                        or state.autoplay_prefetch is not None):
+                    log.info('Autoplay 預載完成但狀態已變，丟棄: ' + song['title'])
+                    return
+                state.autoplay_prefetch = song
+                result = song
+                log.info(f'Autoplay 預載完成: {song["title"]}')
+            except Exception as e:
+                log.error(f'Autoplay 預載失敗: {e}')
+        return result
 
     async def _play_next(self, guild_id: int, voice_client: discord.VoiceClient):
         if not voice_client.is_connected():
@@ -415,18 +561,31 @@ class MusicCog(commands.Cog):
         # 隊列空了且 autoplay 開啟
         if not state.queue and state.autoplay and state.current:
             if state.autoplay_prefetch:
-                # 預載好了，直接用（零等待）
+                # 快路徑：預載好了，零等待取用（短鎖，不會被 prefetch 的 25s fetch 擋住）
                 log.info('Autoplay: 使用預載歌曲')
-                state.queue.append(state.autoplay_prefetch)
-                state.autoplay_prefetch = None
-            else:
-                # 來不及預載，即時抓（備用路徑）
+                async with self._get_autoplay_lock(state):
+                    if state.autoplay_prefetch:
+                        state.queue.append(state.autoplay_prefetch)
+                        state.autoplay_prefetch = None
+            elif state.current:
+                # 慢路徑：來不及預載 → lock *外* 即時抓（避免持鎖 fetch 卡住其它路徑），
+                # 寫回時進鎖並限時 5s——搶不到就 delay，下一跳再試（不硬卡歌）。
                 log.info('Autoplay: 即時抓取推薦...')
                 new_songs = await self._get_autoplay_songs(
                     state.current['webpage_url'], state.history_titles
                 )
                 if new_songs:
-                    state.queue.extend(new_songs)
+                    try:
+                        await asyncio.wait_for(self._get_autoplay_lock(state).acquire(), timeout=5)
+                        try:
+                            # 寫回前復核（fetch 期間可能已 /stop / 已有人補上 prefetch）
+                            if state.autoplay and state.current and not state.queue:
+                                if not state.autoplay_prefetch:
+                                    state.queue.extend(new_songs)
+                        finally:
+                            self._get_autoplay_lock(state).release()
+                    except asyncio.TimeoutError:
+                        log.info('Autoplay: 拿不到鎖，delay 這一輪（下跳再試）')
 
         if not state.queue:
             state.current = None
@@ -656,21 +815,26 @@ class MusicCog(commands.Cog):
 
         await interaction.response.defer()
 
-        old = state.autoplay_prefetch
-        state.autoplay_prefetch = None
-        if old:
-            if old.get('title'):
-                state.history_titles.add(old['title'].lower().strip())
-            if old.get('webpage_url'):
-                state.history.append(old['webpage_url'])
-                if len(state.history) > 20:
-                    state.history.pop(0)
+        # #5: 把要跳過的那首抓出來當「硬排除」，讓新推薦不會又選回同一首
+        async with self._get_autoplay_lock(state):
+            old = state.autoplay_prefetch
+            state.autoplay_prefetch = None
+            excluded: set = set()
+            if old and old.get('title'):
+                excluded.add(old['title'].lower().strip())
+            if old:
+                if old.get('webpage_url'):
+                    state.history.append(old['webpage_url'])
+                    if len(state.history) > 20:
+                        state.history.pop(0)
+                if old.get('title'):
+                    state.history_titles.add(old['title'].lower().strip())
 
-        await self._prefetch_autoplay(interaction.guild_id)
+        new = await self._prefetch_autoplay(interaction.guild_id, exclude_titles=excluded)
 
-        if state.autoplay_prefetch:
-            t = state.autoplay_prefetch['title']
-            url = state.autoplay_prefetch.get('webpage_url', '')
+        if new:
+            t = new['title']
+            url = new.get('webpage_url', '')
             await interaction.followup.send(f'🔀 已換掉，Autoplay 下一首改為：\n**[{t}]({url})**')
         else:
             await interaction.followup.send('⚠️ 找不到新的推薦，queue 空了之後會再試一次')

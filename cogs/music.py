@@ -4,6 +4,7 @@ import logging
 import random
 import re
 import shutil
+import threading
 import time
 import sys
 from collections.abc import Set as _AbstractSet
@@ -64,6 +65,7 @@ class GuildMusicState:
     want_voice: bool = False   # watchdog: 有在播/想繼續 → True;被斷線時自動重連
     voice_channel_id: Optional[int] = None  # watchdog: 應該要連的 voice channel
     current_started_mono: float = 0.0       # 斷點續播:目前這曲开播的 monotonic 時間戳
+    stop_token: int = 0                     # /stop 時 +1，讓 in-flight _play_next 知道已停
 
 
 class MusicCog(commands.Cog):
@@ -78,6 +80,10 @@ class MusicCog(commands.Cog):
         session = requests.Session()
         session.request = partial(session.request, timeout=self.YTM_TIMEOUT)  # type: ignore[method-assign]
         self._ytm = YTMusic(requests_session=session)
+        # 跨 guild 線程保護: innertube 呼叫跑在 thread pool，多 guild 並行時
+        # 共用同一個 requests.Session(cookie jar / headers 是可變共享狀態，requests
+        # 不保證 thread-safe)。用一把 cog 級 threading.Lock 串行化所有 YTM 請求。
+        self._ytm_lock = threading.Lock()
         if getattr(self._ytm, '_send_request', None) is None:
             # 私有 API 若消失，autoplay 會全掛；提前告警，別等上線才炸
             log.warning('ytmusicapi 缺少 _send_request —— autoplay 推薦會不可用，'
@@ -234,9 +240,11 @@ class MusicCog(commands.Cog):
         """用 ytmusicapi 在 YouTube Music 搜尋歌曲，回傳前 count 個候選。"""
         try:
             loop = asyncio.get_running_loop()
+            # 走同一把 _ytm_lock：search() 與 autoplay 的 innertube next 共用
+            # 同一個 requests.Session，裸呼叫會跨線程併發操作 → 偶發崩。
             raw = await loop.run_in_executor(
                 None,
-                lambda: self._ytm.search(query, filter='songs', limit=count),
+                lambda: self._search_locked(query, count),
             )
             results = [self._ytm_track_to_dict(r) for r in (raw or [])]
             results = [r for r in results if r][:count]
@@ -246,6 +254,11 @@ class MusicCog(commands.Cog):
         except Exception as e:
             log.info(f'YouTube Music 搜尋失敗: {e}')
             return []
+
+    def _search_locked(self, query: str, count: int):
+        """search 的線程安全包裝（與 _send_request_locked 共用同一把鎖）。"""
+        with self._ytm_lock:
+            return self._ytm.search(query, filter='songs', limit=count)
 
     def _pick_best(self, results: list[dict], query: str) -> dict:
         """
@@ -424,6 +437,16 @@ class MusicCog(commands.Cog):
                 continue   # 單一畸形 item 不該拖垮整批
         return out
 
+    def _send_request_locked(self, endpoint: str, body: dict) -> dict:
+        """innertube 請求的線程安全包裝。
+
+        跑在 thread pool，多 guild 並行時共用同一個 requests.Session
+        (cookie jar / headers 是可變共享狀態，requests 不保證 thread-safe)。
+        用 cog 級 threading.Lock 串行化所有 YTM 請求。
+        """
+        with self._ytm_lock:
+            return self._ytm._send_request(endpoint, body)
+
     async def _get_autoplay_songs(
         self,
         webpage_url: str,
@@ -454,7 +477,8 @@ class MusicCog(commands.Cog):
             loop = asyncio.get_running_loop()
             data = await asyncio.wait_for(
                 loop.run_in_executor(
-                    None, lambda: self._ytm._send_request("next", body),
+                    None,
+                    lambda: self._send_request_locked("next", body),
                 ),
                 timeout=25,
             )
@@ -534,6 +558,8 @@ class MusicCog(commands.Cog):
             return
 
         state = self.get_state(guild_id)
+        # 捕捉 /stop token：本函式任何 await 後若它已 +1，代表 /stop 介入 → 放棄
+        token = state.stop_token
 
         # Repeat 處理
         if state.current:
@@ -543,6 +569,14 @@ class MusicCog(commands.Cog):
                 song['url'] = ''  # 重新抓串流 URL，避免過期
                 try:
                     await self._ensure_stream_url(song)
+                    # await 期間使用者可能 /stop（token+1）→ 別讓歌復活
+                    if state.stop_token != token:
+                        log.info('Repeat one: /stop 介入，放棄重播')
+                        return
+                    # 也可能已被 /play 起播 / 暫停中 → 別覆蓋
+                    if voice_client.is_playing() or voice_client.is_paused():
+                        log.info('Repeat one: voice 佔用中，跳過重播')
+                        return
                     self._start_song(guild_id, voice_client, state, song)
                 except Exception as e:
                     log.error(f'Repeat one 失敗，繼續下一首: {e}')
@@ -558,54 +592,103 @@ class MusicCog(commands.Cog):
 
         state.repeat_skip = False
 
-        # 隊列空了且 autoplay 開啟
-        if not state.queue and state.autoplay and state.current:
-            if state.autoplay_prefetch:
-                # 快路徑：預載好了，零等待取用（短鎖，不會被 prefetch 的 25s fetch 擋住）
-                log.info('Autoplay: 使用預載歌曲')
+        # ── 決定下一首並播放（有上限 ≤3 輪，避免無界遞迴）──
+        #
+        # 把「补歌」和「起播」放同一個有界迴圈內，每輪：
+        #   (a) 若 queue 空且 autoplay 開：先鎖內補一首（快路徑取 prefetch；
+        #       慢路徑鎖內 fetch 後直接入隊）
+        #   (b) pop 一首；stream URL 失敗 / voice 已被 /play 搶 → 記歷史+讓下一輪
+        #       用新的 innertube 推薦（軟過濾避開）重來
+        #   (c) 3 輪都起不來才清 current
+        #
+        # 這消除了先前版本「慢路徑 fetch 的 song 失敗後直接 return、但 current 仍
+        # 指向舊歌」的永久靜音漏洞（Claude round-4 指出）——現在每輪都能補新推薦。
+        for _attempt in range(3):
+            # (a) 補歌——queue 空且 autoplay 開時
+            if not state.queue and state.autoplay and state.current:
                 async with self._get_autoplay_lock(state):
+                    # /stop 可能在我們等鎖/上一輪 await 期間介入了 → 放棄，別寫回
+                    if state.stop_token != token:
+                        log.info('Autoplay: /stop 介入，放棄補歌')
+                        return
                     if state.autoplay_prefetch:
+                        log.info('Autoplay: 使用預載歌曲')
                         state.queue.append(state.autoplay_prefetch)
                         state.autoplay_prefetch = None
-            elif state.current:
-                # 慢路徑：來不及預載 → lock *外* 即時抓（避免持鎖 fetch 卡住其它路徑），
-                # 寫回時進鎖並限時 5s——搶不到就 delay，下一跳再試（不硬卡歌）。
-                log.info('Autoplay: 即時抓取推薦...')
-                new_songs = await self._get_autoplay_songs(
-                    state.current['webpage_url'], state.history_titles
-                )
-                if new_songs:
-                    try:
-                        await asyncio.wait_for(self._get_autoplay_lock(state).acquire(), timeout=5)
-                        try:
-                            # 寫回前復核（fetch 期間可能已 /stop / 已有人補上 prefetch）
-                            if state.autoplay and state.current and not state.queue:
-                                if not state.autoplay_prefetch:
-                                    state.queue.extend(new_songs)
-                        finally:
-                            self._get_autoplay_lock(state).release()
-                    except asyncio.TimeoutError:
-                        log.info('Autoplay: 拿不到鎖，delay 這一輪（下跳再試）')
+                    else:
+                        # 持鎖 fetch 25s 不會卡死其它路徑（它們本就要等這把鎖來
+                        # safe 地改 prefetch/queue），且 fetch 完在**同一把鎖內**
+                        # 直接寫回，中間不可能被搶——沒有 check-then-act 縫隙。
+                        seed_url = state.current['webpage_url']
+                        log.info('Autoplay: 即時抓取推薦...')
+                        new_songs = await self._get_autoplay_songs(
+                            seed_url, state.history_titles
+                        )
+                        # 寫回前復核：fetch 期間 /stop / 切歌 / 已有 prefetch
+                        if (state.stop_token == token and state.autoplay
+                                and state.current is not None
+                                and not state.queue and not state.autoplay_prefetch):
+                            if new_songs:
+                                state.queue.extend(new_songs)
+                            else:
+                                log.info('Autoplay: 這輪沒抓到推薦')
+                        else:
+                            log.info('Autoplay: fetch 期間狀態已變，這輪不接')
 
-        if not state.queue:
-            state.current = None
-            return
+            # (b) 起播
+            # pop 前先複核一次：若 (a) 的 fetch await 期間 /stop 介入了（token+1），
+            # 此時 queue 是 stop 清空後使用者新排的——別 pop 彈掉使用者的歌。
+            if state.stop_token != token:
+                log.info('Autoplay: /stop 介入，放棄起播')
+                return
+            next_song = state.queue.pop(0) if state.queue else None
+            if next_song is None:
+                break  # 沒可播的（queue 空 + autoplay 也空/關 / /play 搶走）
 
-        next_song = state.queue.pop(0)
+            if not next_song.get('url'):
+                try:
+                    await self._ensure_stream_url(next_song)
+                except Exception as e:
+                    log.error(f'重新取得 URL 失敗，換一輪: {e}')
+                    self._mark_failed(next_song, state)
+                    continue  # 記歷史讓下輪挑到不同的，不無限自呼叫
 
-        # 取得串流 URL（預載的歌已有，flat 結果沒有）
-        if not next_song.get('url'):
-            try:
-                await self._ensure_stream_url(next_song)
-            except Exception as e:
-                log.error(f'重新取得 URL 失敗，跳過: {e}')
-                await self._play_next(guild_id, voice_client)
+            # /stop 可能在 _ensure_stream_url 的 await 期間介入 → 放棄
+            if state.stop_token != token:
+                log.info('Autoplay: /stop 介入，放棄起播')
                 return
 
-        try:
-            self._start_song(guild_id, voice_client, state, next_song, prefetch_queued=True)
-        except Exception as e:
-            log.error(f'播放失敗: {e}')
+            # await 期間使用者可能 /play 搶著開播了——voice client 此刻正在放
+            # → 別覆蓋它，退回隊首讓使用者的歌繼續播
+            # (is_playing 在 paused 時回 False → 也檢查 is_paused)
+            if voice_client.is_playing() or voice_client.is_paused():
+                state.queue.insert(0, next_song)
+                log.info('Autoplay: voice 已在播（/play 搶先），這首退回隊首')
+                return
+
+            try:
+                self._start_song(guild_id, voice_client, state, next_song, prefetch_queued=True)
+                return
+            except Exception as e:
+                log.error(f'播放失敗，換一輪: {e}')
+                self._mark_failed(next_song, state)
+
+        # (c) 3 輪都起不來 → 清 current。（is_playing/is_paused 保護：若 await
+        # 期間 /play 已起播或使用者暫停中，就不該抹掉使用者的 current）
+        if not (voice_client.is_playing() or voice_client.is_paused()):
+            state.current = None
+            log.info('Autoplay: 3 輪都起不來，停止')
+        return
+
+    def _mark_failed(self, song: dict, state: 'GuildMusicState') -> None:
+        """失敗的候選記進歷史，避免下一輪又用 innertube 挑回同一首。"""
+        t = song.get('title')
+        if t:
+            state.history_titles.add(t.lower().strip())
+        if len(state.history_titles) > 400:
+            # 保持有界（set 沒有順序，取一半砍掉）
+            drop = set(list(state.history_titles)[:200])
+            state.history_titles -= drop
 
     async def _prefetch_next(self, state: 'GuildMusicState'):
         if not state.queue:
@@ -847,6 +930,7 @@ class MusicCog(commands.Cog):
         state.queue.clear()
         state.current = None
         state.autoplay_prefetch = None
+        state.stop_token += 1   # 讓 in-flight 的 _play_next 在 await 醒來後放棄
 
         if vc:
             vc.stop()

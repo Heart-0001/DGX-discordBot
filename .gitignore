@@ -24,3 +24,4 @@ env/
 # Runtime data (game stats written by the bot)
 data/*.json
 data/healthcheck_latest.txt
+*.whl

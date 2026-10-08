@@ -5,7 +5,8 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from cogs.lyrics_match import clean_artist, parse_lrc, pick_result, title_candidates  # noqa: E402
+from cogs.lyrics_match import (clean_artist, names_match, parse_lrc, pick_candidate,  # noqa: E402
+                               pick_result, title_candidates, usable_synced)
 
 
 class TestParseLrc(unittest.TestCase):
@@ -57,6 +58,49 @@ class TestPickResult(unittest.TestCase):
         r = [{'artistName': 'X', 'duration': 274, 'syncedLyrics': 'a'}]
         self.assertIsNone(pick_result(r, 270, 'Nobody'))
         self.assertIsNotNone(pick_result(r, 273, 'Nobody'))
+
+    def test_lrclib_title_must_match(self):
+        # 同歌手、長度相近的別首歌不能收(My Jinji → Travel Agency)
+        r = [{'artistName': '落日飛車 Sunset Rollercoaster', 'trackName': 'Travel Agency',
+              'duration': 288, 'syncedLyrics': 'x'}]
+        self.assertIsNone(pick_result(r, 290, 'Sunset Rollercoaster', ['My Jinji']))
+        self.assertIsNotNone(pick_result(r, 290, 'Sunset Rollercoaster', ['Travel Agency']))
+
+
+class TestNamesMatch(unittest.TestCase):
+    def test_simplified_vs_traditional(self):
+        self.assertTrue(names_match('美秀集团', '美秀集團'))
+        self.assertTrue(names_match('卷烟', '捲菸'))
+
+    def test_bilingual_and_featuring(self):
+        self.assertTrue(names_match('告五人', '告五人 Accusefive'))
+        self.assertTrue(names_match('美秀集团,林汉庭', '美秀集團'))
+
+    def test_different(self):
+        self.assertFalse(names_match('热心市民66', '告五人 Accusefive'))
+        self.assertFalse(names_match('', '告五人'))
+
+
+class TestPickCandidate(unittest.TestCase):
+    def test_rejects_preview_cover_and_other_song(self):
+        cands = [
+            {'artist': '美秀集团', 'title': '卷烟', 'duration': 30},          # 試聽片段
+            {'artist': '琳誼 Ring', 'title': '捲菸', 'duration': 233},        # 同名別人的歌
+            {'artist': '美秀集团', 'title': '电火王', 'duration': 232},        # 同歌手別首
+            {'artist': '美秀集团', 'title': '卷烟', 'duration': 232},
+        ]
+        got = pick_candidate(cands, 233, '美秀集團', ['捲菸'])
+        self.assertEqual([(c['title'], c['duration']) for c in got], [('卷烟', 232)])
+
+    def test_artist_from_video_title(self):
+        # 上傳者是 JVR Music，歌手名在標題裡
+        cands = [{'artist': '周杰倫', 'title': '晴天', 'duration': 269}]
+        who = 'JVR Music 周杰倫 Jay Chou【晴天 Sunny Day】Official MV'
+        self.assertEqual(len(pick_candidate(cands, 271, who, ['晴天 Sunny Day', '晴天'])), 1)
+
+    def test_usable_synced_needs_enough_lines(self):
+        self.assertFalse(usable_synced([{'t': 0, 'text': '純音樂，請欣賞'}]))
+        self.assertTrue(usable_synced([{'t': i, 'text': f'l{i}'} for i in range(5)]))
 
 
 if __name__ == '__main__':

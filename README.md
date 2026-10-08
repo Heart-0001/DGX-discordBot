@@ -18,7 +18,8 @@
 
 ### 🎤 同步歌詞（Discord Activity）
 - `/lyrics` 在語音頻道開啟內嵌歌詞畫面，所有人一起看
-- 歌詞來源 [LRCLIB](https://lrclib.net)，自動清理標題（Official MV、括號、中英並列）並比對歌手與歌曲長度
+- 歌詞來源依序：**YouTube Music**（官方 LyricFind / Musixmatch）→ [LRCLIB](https://lrclib.net) → 網易雲 / QQ 音樂 / 酷狗
+- 自動清理標題（Official MV、括號、中英並列），歌手、歌名（簡繁通用）、歌曲長度都要對得上才採用，避免配到翻唱、試聽片段或同歌手的別首歌
 - 播放位置以 bot **實際送出的音框**計算，暫停 / 續播 / 換歌都即時跟上
 - 模糊流動封面背景、目前這句高亮、間奏顯示三個點；右下角 ± 可微調延遲
 - 縮成右上角小視窗（PiP）時自動切成精簡版面，長句自動縮字最多兩行
@@ -186,7 +187,7 @@ MusicCog（TrackedSource）
 LyricsCog（aiohttp，127.0.0.1:8765）
   ├─ /ws         每 0.25 秒推一次 {歌曲, 位置, 是否暫停}；換歌時推歌詞
   ├─ /api/thumb  代抓封面（Activity 的 CSP 不允許直接載外部圖片）
-  └─ LRCLIB 查歌詞（快取 200 首）
+  └─ 查歌詞（快取 200 首）：YTM 這首 → YTM 搜歌曲版 → LRCLIB → 網易雲 / QQ / 酷狗 → LRCLIB 純文字
 activity/（前端）
   └─ 「位置 − 本地時間」在播放中是常數，網路延遲只會讓它變小
      → 取最近 6 秒內最大值當基準，抗網路抖動；跳轉 / 卡頓時重新取樣
@@ -201,7 +202,8 @@ discordbot/
 ├── bot.py                  # Bot 主程式：啟動、載入 cogs、slash command 同步
 ├── cogs/
 │   ├── music.py            # 音樂播放
-│   ├── lyrics.py           # /lyrics：歌詞伺服器、WebSocket、LRCLIB 查詢
+│   ├── lyrics.py           # /lyrics：歌詞伺服器、WebSocket、歌詞查詢流程
+│   ├── lyrics_sources.py   # 網易雲 / QQ 音樂 / 酷狗 歌詞來源
 │   ├── lyrics_match.py     # 歌名清理、歌手比對、LRC 解析（純函式）
 │   ├── health.py           # /check 健康報告
 │   ├── bigtwo.py           # 大老二
@@ -237,4 +239,6 @@ pytest tests/
 - FFmpeg 需另外安裝；Windows 可從 [gyan.dev](https://www.gyan.dev/ffmpeg/builds/) 下載。
 - YouTube 串流 URL 有時效性，長時間暫停後可能需要重新播放。
 - ytmusicapi 不需登入帳號即可使用搜尋與 Radio 推薦。
-- 同步歌詞查不到時會顯示封面、歌名與進度條；LRCLIB 只有逐行時間軸，所以是整行亮起，不是逐字卡拉 OK。
+- 同步歌詞查不到時會顯示封面、歌名與進度條；歌詞只有逐行時間軸，所以是整行亮起，不是逐字卡拉 OK。
+- 播放 MV 影片時，若 MV 長度跟歌曲版差太多（多了前奏 / 劇情），為避免時間軸錯位會不顯示歌詞。
+- 網易雲 / QQ 音樂 / 酷狗為非官方 API，可能隨時失效；失效時會自動略過。

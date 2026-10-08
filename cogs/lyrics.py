@@ -5,23 +5,34 @@
   Developer Portal 的 Activity URL Mapping 指到那個網址。
   網頁(activity/dist)用 WebSocket 每 0.25 秒拿一次 MusicCog 的播放快照；
   播放位置來自 TrackedSource 實際送出的音框數，暫停時自動停住。
-歌詞來源：LRCLIB(https://lrclib.net)，有時間軸就同步捲動，沒有就顯示純文字。
+歌詞來源(依序)：
+  1. YouTube Music 正在播的這首(官方 LyricFind / Musixmatch，有每句結束時間)
+  2. YouTube Music 用歌名搜歌曲版本(MV 影片本身常沒歌詞)
+  3. LRCLIB(https://lrclib.net)
+  4. 網易雲 / QQ 音樂 / 酷狗同時查(cogs/lyrics_sources.py)
+  都沒有時間軸才退回 LRCLIB 的純文字。
 """
 import asyncio
 import logging
 import os
 import re
+import threading
 from collections import OrderedDict
+from functools import partial
 from typing import Optional
 from urllib.parse import urlparse
 
 import aiohttp
 import discord
+import requests
 from aiohttp import web
 from discord import app_commands
 from discord.ext import commands
+from ytmusicapi import YTMusic
 
-from cogs.lyrics_match import clean_artist, name_variants, parse_lrc, pick_result, title_candidates
+from cogs.lyrics_match import (clean_artist, name_variants, parse_lrc, pick_candidate, pick_result,
+                               title_candidates, usable_synced)
+from cogs.lyrics_sources import SOURCES
 
 log = logging.getLogger(__name__)
 
@@ -35,6 +46,8 @@ LRCLIB_HEADERS = {'User-Agent': 'heart-discordbot-lyrics/1.0 (https://github.com
 TICK_SECS = 0.25
 CACHE_SIZE = 200
 THUMB_HOSTS = ('ytimg.com', 'googleusercontent.com', 'ggpht.com')
+YTM_TIMEOUT = (10, 20)
+GAP_SECS = 4   # YTM 歌詞一句結束到下一句開始超過這麼久 → 插空白行(前端顯示間奏三個點)
 
 def thumb_url(song: dict) -> str:
     """歌曲封面；播放清單/YTM 網址加進來的歌常沒有 thumbnail，就用影片 ID 組 YouTube 縮圖。"""
@@ -55,6 +68,11 @@ class LyricsCog(commands.Cog):
         self._inflight: dict[str, asyncio.Task] = {}
         self._http: Optional[aiohttp.ClientSession] = None
         self._runner: Optional[web.AppRunner] = None
+        # 自己一個 YTMusic(跟 MusicCog 分開，不搶它的 session)；ytmusicapi 是同步的 → 丟 thread + lock
+        session = requests.Session()
+        session.request = partial(session.request, timeout=YTM_TIMEOUT)  # type: ignore[method-assign]
+        self._ytm = YTMusic(requests_session=session)
+        self._ytm_lock = threading.Lock()
 
     # ── lifecycle ──
     async def cog_load(self):
@@ -97,6 +115,62 @@ class LyricsCog(commands.Cog):
             self._cache.popitem(last=False)
         return result
 
+    # ── YouTube Music 歌詞 ──
+    def _ytm_timed_lyrics_sync(self, video_id: str) -> Optional[list[dict]]:
+        with self._ytm_lock:
+            d = self._ytm._send_request('next', {'videoId': video_id, 'isAudioOnly': True})
+            tabs = (d['contents']['singleColumnMusicWatchNextResultsRenderer']['tabbedRenderer']
+                    ['watchNextTabbedResultsRenderer']['tabs'])
+            ep = tabs[1]['tabRenderer'].get('endpoint') if len(tabs) > 1 else None
+            if not ep:
+                return None
+            res = self._ytm.get_lyrics(ep['browseEndpoint']['browseId'], timestamps=True)
+        if not res or not res.get('hasTimestamps'):
+            return None
+        out = []
+        raw = res['lyrics']
+        for i, ln in enumerate(raw):
+            text = '' if ln.text.strip() in ('♪', '') else ln.text.strip()
+            out.append({'t': ln.start_time / 1000, 'text': text})
+            nxt = raw[i + 1].start_time if i + 1 < len(raw) else None
+            if text and nxt is not None and (nxt - ln.end_time) / 1000 >= GAP_SECS:
+                out.append({'t': ln.end_time / 1000, 'text': ''})   # 間奏
+        return out
+
+    async def _ytm_lyrics(self, video_id: str) -> Optional[list[dict]]:
+        try:
+            lines = await asyncio.to_thread(self._ytm_timed_lyrics_sync, video_id)
+        except Exception as e:
+            log.warning(f'YTM 歌詞失敗 {video_id}: {e!r}')
+            return None
+        return lines if usable_synced(lines) else None
+
+    def _ytm_search_sync(self, q: str) -> list[dict]:
+        with self._ytm_lock:
+            res = self._ytm.search(q, filter='songs', limit=5)
+        return [{'artist': ', '.join(a['name'] for a in r.get('artists') or []), 'title': r.get('title', ''),
+                 'duration': r.get('duration_seconds') or 0, 'ref': r['videoId']}
+                for r in res if r.get('videoId')]
+
+    async def _ytm_by_search(self, cands: list[str], artists: list[str], who: str, duration: float):
+        """MV 影片沒歌詞時，到 YTM 找同一首歌的「歌曲」版本(歌手、長度要對得上)。"""
+        tried = set()
+        for c in cands[:2]:
+            for q in ([f'{artists[0]} {c}'] if artists else []) + [c]:
+                try:
+                    found = await asyncio.to_thread(self._ytm_search_sync, q)
+                except Exception as e:
+                    log.warning(f'YTM 搜尋失敗 {q}: {e!r}')
+                    continue
+                for cand in pick_candidate(found, duration, who, cands)[:2]:
+                    if cand['ref'] in tried:
+                        continue
+                    tried.add(cand['ref'])
+                    lines = await self._ytm_lyrics(cand['ref'])
+                    if lines:
+                        return cand, lines
+        return None
+
     async def _lrclib(self, path: str, params: dict):
         try:
             async with self._http.get(f'{LRCLIB}/{path}', params=params) as r:
@@ -113,44 +187,86 @@ class LyricsCog(commands.Cog):
         duration = song.get('duration') or 0
         cands = title_candidates(title, artist)
         artists = name_variants(artist) if artist else []
+        # 上傳者常不是歌手(周杰倫的 MV 是 JVR Music 上傳)→ 標題裡出現的名字也算
+        who = f'{artist} {title}'
+
+        # 1. YTM：正在播的這首
+        m = re.search(r'(?:v=|youtu\.be/)([\w-]{11})', song.get('webpage_url') or '')
+        if m and (lines := await self._ytm_lyrics(m.group(1))):
+            log.info(f'🎤 歌詞: {title} → YouTube Music (同步)')
+            return {'synced': lines, 'plain': None}
+        # 2. YTM：用歌名找歌曲版本
+        if hit := await self._ytm_by_search(cands, artists, who, duration):
+            cand, lines = hit
+            log.info(f'🎤 歌詞: {title} → YouTube Music 搜尋 {cand["artist"]} - {cand["title"]} (同步)')
+            return {'synced': lines, 'plain': None}
+
         found = None
 
         def better(pick):
             return pick and (not found or (pick.get('syncedLyrics') and not found.get('syncedLyrics')))
 
-        # 1. 精確查詢：歌名 × 歌手組合
+        # 3. LRCLIB 精確查詢：歌名 × 歌手組合
         for c in cands[:3]:
             for a in artists:
                 q = {'track_name': c, 'artist_name': a}
                 if duration:
                     q['duration'] = int(duration)
                 d = await self._lrclib('get', q)
-                pick = pick_result([d] if d else [], duration, artist)
+                pick = pick_result([d] if d else [], duration, artist, cands)
                 if better(pick):
                     found = pick
                 if found and found.get('syncedLyrics'):
                     break
             if found and found.get('syncedLyrics'):
                 break
-        # 2. 模糊搜尋
+        # 3b. LRCLIB 模糊搜尋
         if not found or not found.get('syncedLyrics'):
             for c in cands:
                 queries = [{'q': f'{a} {c}'} for a in artists[:2]] + [{'q': c}]
                 for q in queries:
-                    pick = pick_result(await self._lrclib('search', q) or [], duration, artist)
+                    pick = pick_result(await self._lrclib('search', q) or [], duration, artist, cands)
                     if better(pick):
                         found = pick
                     if found and found.get('syncedLyrics'):
                         break
                 if found and found.get('syncedLyrics'):
                     break
+        if found and found.get('syncedLyrics'):
+            synced = parse_lrc(found['syncedLyrics'])
+            log.info(f'🎤 歌詞: {title} → LRCLIB {found.get("artistName")} - {found.get("trackName")} (同步)')
+            return {'synced': synced, 'plain': None}
+        # 4. 其他來源(中文歌齊全)：同時查，依 SOURCES 順序取第一個有時間軸的
+        results = await asyncio.gather(*(self._try_source(src, cands, artists, who, duration)
+                                         for src in SOURCES))
+        for (name, *_), hit in zip(SOURCES, results):
+            if hit:
+                cand, synced = hit
+                log.info(f'🎤 歌詞: {title} → {name} {cand["artist"]} - {cand["title"]} (同步)')
+                return {'synced': synced, 'plain': None}
         if not found:
             log.info(f'🎤 找不到歌詞: {title}')
             return {'synced': None, 'plain': None}
-        synced = parse_lrc(found['syncedLyrics']) if found.get('syncedLyrics') else None
-        log.info(f'🎤 歌詞: {title} → {found.get("artistName")} - {found.get("trackName")}'
-                 f' ({"同步" if synced else "純文字"})')
-        return {'synced': synced or None, 'plain': None if synced else found.get('plainLyrics')}
+        log.info(f'🎤 歌詞: {title} → LRCLIB {found.get("artistName")} - {found.get("trackName")} (純文字)')
+        return {'synced': None, 'plain': found.get('plainLyrics')}
+
+    async def _try_source(self, src, cands: list[str], artists: list[str], who: str, duration: float):
+        """在單一外部來源找同步歌詞，回 (候選, 解析後歌詞) 或 None。
+        最多試 2 個歌名 ×(歌手+歌名、只有歌名)；who = 上傳者 + 原標題，用來比對歌手。"""
+        name, search, fetch = src
+        tried = set()
+        for c in cands[:2]:
+            for q in ([f'{artists[0]} {c}'] if artists else []) + [c]:
+                found = pick_candidate(await search(self._http, q, duration), duration, who, cands)
+                for cand in found[:2]:
+                    if cand['ref'] in tried:
+                        continue
+                    tried.add(cand['ref'])
+                    lrc = await fetch(self._http, cand['ref'])
+                    synced = parse_lrc(lrc) if lrc else None
+                    if usable_synced(synced):
+                        return cand, synced
+        return None
 
     # ── HTTP handlers ──
     @staticmethod

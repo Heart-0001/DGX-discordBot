@@ -1,6 +1,6 @@
 # 🎮 DGX Discord Bot
 
-個人多功能 Discord Bot，整合 **音樂播放**、**大老二** 與 **UNO** 兩款多人卡牌遊戲，全部以 slash command 操作。
+個人多功能 Discord Bot，整合 **音樂播放**（含 Apple Music 風格的**同步歌詞**畫面）、**大老二** 與 **UNO** 兩款多人卡牌遊戲，全部以 slash command 操作。
 
 ---
 
@@ -12,6 +12,20 @@
 - **播放清單支援** — 貼上 YouTube 播放清單連結即可整批加入 queue（無數量上限）
 - **隨機播放清單** — 播放清單可自動打亂順序
 - **插播下一首** — 將歌曲插入到 queue 第一位
+- **循環模式** — 單曲循環 / 整個 queue 循環
+- **斷線自動重連** — 語音被踢掉或網路斷線時自動重連（指數退避），並從斷點續播
+- **起播失敗自動重試** — YouTube 偶發對串流 URL 回 403 時，自動重抓 URL 再播一次，不會無聲跳過
+
+### 🎤 同步歌詞（Discord Activity）
+- `/lyrics` 在語音頻道開啟內嵌歌詞畫面，所有人一起看
+- 歌詞來源 [LRCLIB](https://lrclib.net)，自動清理標題（Official MV、括號、中英並列）並比對歌手與歌曲長度
+- 播放位置以 bot **實際送出的音框**計算，暫停 / 續播 / 換歌都即時跟上
+- 模糊流動封面背景、目前這句高亮、間奏顯示三個點；右下角 ± 可微調延遲
+- 縮成右上角小視窗（PiP）時自動切成精簡版面，長句自動縮字最多兩行
+
+### 🩺 健康檢查
+- `scripts/healthcheck.sh` 每日診斷 service 狀態、重啟抖動、403 / 播放失敗、OOM、yt-dlp 版本、log 大小
+- `/check` 在 Discord 查看最近一次報告
 
 ### 🃏 大老二（Big Two）
 - 2~4 人多人對戰，圖片化手牌顯示
@@ -28,6 +42,7 @@
 
 ### 1. 環境需求
 - Python 3.10+
+- Node.js 18+（只有要重新 build 歌詞畫面時需要，`activity/dist/` 已附編好的版本）
 - FFmpeg（音樂功能需要）
   - Linux / macOS：裝好並加入 PATH 即可，程式會自動偵測（`shutil.which('ffmpeg')`）
   - Windows：若不在 PATH，可修改 `cogs/music.py` 的 `FFMPEG_PATH` 後備路徑
@@ -47,6 +62,7 @@ cp .env.example .env
 編輯 `.env`：
 ```env
 DISCORD_TOKEN=你的_Bot_Token
+# LYRICS_PORT=8765   # 選填：歌詞畫面伺服器的本機 port
 ```
 > Bot Token 從 [Discord Developer Portal](https://discord.com/developers/applications) 取得。
 > 需開啟 **Message Content Intent** 與 **Voice States Intent**。
@@ -56,6 +72,41 @@ DISCORD_TOKEN=你的_Bot_Token
 python bot.py
 ```
 > 啟動後會自動把 slash command 同步到所在的每個伺服器；也可在伺服器內用 `!sync` 手動重新同步。
+
+### 5.（選用）設定同步歌詞 `/lyrics`
+Discord Activity 必須透過**公開的 HTTPS 網址**載入，bot 內建的歌詞伺服器只聽 `127.0.0.1:8765`，需要用 [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/) 之類的工具對外：
+
+```
+Discord ──→ https://lyrics.你的網域 ──(Cloudflare Tunnel)──→ 本機 127.0.0.1:8765
+```
+
+1. **Tunnel**（網域需託管在 Cloudflare，免費方案即可）
+   ```bash
+   cloudflared tunnel login                       # 會給一個網址，用任何裝置的瀏覽器授權
+   cloudflared tunnel create discordbot-lyrics
+   cloudflared tunnel route dns discordbot-lyrics lyrics.你的網域
+   ```
+   `~/.cloudflared/config.yml`：
+   ```yaml
+   tunnel: <tunnel id>
+   credentials-file: /home/<user>/.cloudflared/<tunnel id>.json
+   ingress:
+     - hostname: lyrics.你的網域
+       service: http://127.0.0.1:8765
+     - service: http_status:404
+   ```
+   再用 `cloudflared tunnel run discordbot-lyrics` 常駐（建議做成 systemd 服務）。
+2. **Developer Portal** → 你的 App → Activities
+   - Settings：開啟 **Enable Activities**
+   - URL Mappings：Root Mapping `/` → `lyrics.你的網域`
+3. 重啟 bot，在語音頻道用 `/lyrics` 開啟。
+
+> 開啟 Activities 後 Discord 會自動建立一個全域的 Entry Point 指令（`launch`），`bot.py` 清理全域指令時會跳過它。
+
+修改歌詞畫面前端後重新 build（不用重啟 bot，伺服器直接讀 `activity/dist/`）：
+```bash
+cd activity && npm install && npm run build
+```
 
 ---
 
@@ -75,10 +126,19 @@ python bot.py
 | `/queue` | 查看播放中與 queue 清單（含 Autoplay 預載的下一首）。 |
 | `/nowplaying` | 查看目前歌曲詳細資訊。 |
 | `/remove <位置>` 或 `/remove <起> <迄>` | 移除 queue 中單首或範圍歌曲（從 1 起算）。 |
+| `/repeat` | 切換循環模式：off → one（單曲）→ all（整個 queue）→ off。 |
 | `/autoplay` | 開啟 / 關閉 Autoplay。 |
 | `/skipautoplay` | 換一首 Autoplay 推薦（不跳掉目前歌曲）。 |
 | `/volume <0-100>` | 調整音量。 |
 | `/info` | 顯示 Bot 連線與播放狀態。 |
+| `/come` | 把 Bot 移到你所在的語音頻道（不中斷播放）。 |
+| `/lyrics` | 在語音頻道開啟同步歌詞畫面（需先完成上方步驟 5）。 |
+
+### 🩺 其他
+| 指令 | 說明 |
+|------|------|
+| `/check` | 顯示最近一次健康檢測報告。 |
+| `!sync` | 手動重新同步 slash command 到目前伺服器。 |
 
 ### 🃏 大老二
 | 指令 | 說明 |
@@ -113,8 +173,23 @@ python bot.py
   └─ 直接抓取該影片 / 播放清單
 
 Autoplay 推薦
-  └─ ytmusicapi.get_watch_playlist(radio=True)
+  └─ 直接呼叫 YouTube Music innertube `next` 端點取 Radio 清單
+     （ytmusicapi.get_watch_playlist 在 YT Music 改版後已失效）
        └─ 過濾已播過的歌（依標題比對）→ 預載串流 URL → 零間隔接播
+```
+
+## 歌詞同步原理
+
+```
+MusicCog（TrackedSource）
+  └─ 每送出一個 20ms 音框 +1 → 播放位置 = 續播起點 + 音框數 × 0.02 秒
+LyricsCog（aiohttp，127.0.0.1:8765）
+  ├─ /ws         每 0.25 秒推一次 {歌曲, 位置, 是否暫停}；換歌時推歌詞
+  ├─ /api/thumb  代抓封面（Activity 的 CSP 不允許直接載外部圖片）
+  └─ LRCLIB 查歌詞（快取 200 首）
+activity/（前端）
+  └─ 「位置 − 本地時間」在播放中是常數，網路延遲只會讓它變小
+     → 取最近 6 秒內最大值當基準，抗網路抖動；跳轉 / 卡頓時重新取樣
 ```
 
 ---
@@ -126,15 +201,23 @@ discordbot/
 ├── bot.py                  # Bot 主程式：啟動、載入 cogs、slash command 同步
 ├── cogs/
 │   ├── music.py            # 音樂播放
+│   ├── lyrics.py           # /lyrics：歌詞伺服器、WebSocket、LRCLIB 查詢
+│   ├── lyrics_match.py     # 歌名清理、歌手比對、LRC 解析（純函式）
+│   ├── health.py           # /check 健康報告
 │   ├── bigtwo.py           # 大老二
 │   └── uno.py              # UNO
+├── activity/               # 同步歌詞畫面（Discord Activity 前端）
+│   ├── src/                # 原始碼（main.js / style.css / index.html）
+│   └── dist/               # build 結果，bot 直接提供
+├── scripts/
+│   └── healthcheck.sh      # 每日健檢（只診斷不修復）
 ├── games/
 │   ├── bigtwo_logic.py     # 大老二規則邏輯
 │   ├── uno_logic.py        # UNO 規則邏輯
 │   ├── card_image.py       # 大老二手牌圖片繪製
 │   └── uno_image.py        # UNO 手牌圖片繪製
-├── tests/                  # UNO 測試（含 CPU 對手）
-├── data/                   # 執行時遊戲統計（不納入版控）
+├── tests/                  # 單元測試（UNO、repeat、起播重試、歌詞比對）
+├── data/                   # 執行時遊戲統計、健檢報告（不納入版控）
 ├── requirements.txt        # Python 依賴套件
 ├── .env.example            # 環境變數範本
 └── .env                    # Bot Token（不要上傳到 GitHub）
@@ -154,3 +237,4 @@ pytest tests/
 - FFmpeg 需另外安裝；Windows 可從 [gyan.dev](https://www.gyan.dev/ffmpeg/builds/) 下載。
 - YouTube 串流 URL 有時效性，長時間暫停後可能需要重新播放。
 - ytmusicapi 不需登入帳號即可使用搜尋與 Radio 推薦。
+- 同步歌詞查不到時會顯示封面、歌名與進度條；LRCLIB 只有逐行時間軸，所以是整行亮起，不是逐字卡拉 OK。

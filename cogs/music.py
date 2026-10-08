@@ -90,6 +90,7 @@ class GuildMusicState:
     voice_channel_id: Optional[int] = None  # watchdog: 應該要連的 voice channel
     current_started_mono: float = 0.0       # 斷點續播:目前這曲开播的 monotonic 時間戳
     stop_token: int = 0                     # /stop 時 +1，讓 in-flight _play_next 知道已停
+    start_retried: bool = False             # 目前這曲是否已是「起播即死」後的重試
 
 
 class MusicCog(commands.Cog):
@@ -207,8 +208,10 @@ class MusicCog(commands.Cog):
         *,
         prefetch_queued: bool = False,
         seek: float = 0.0,
+        is_retry: bool = False,
     ):
         state.current = song
+        state.start_retried = is_retry
         if voice_client.channel is not None:
             state.want_voice = True
             state.voice_channel_id = voice_client.channel.id
@@ -603,6 +606,15 @@ class MusicCog(commands.Cog):
         # 捕捉 /stop token：本函式任何 await 後若它已 +1，代表 /stop 介入 → 放棄
         token = state.stop_token
 
+        # 起播即死（googlevideo 偶發對串流 URL 回 403，ffmpeg 開不了 input、
+        # 幾十 ms 就退出）→ 重抓 URL 重播一次，別讓這首被無聲跳過
+        if self._died_on_start(state):
+            if await self._retry_start(guild_id, voice_client, state, token):
+                return
+        elif state.start_retried and self._start_died(state):
+            # 重試過的 URL 也開不起來 → 這首會被跳過，留 log 讓健檢數得到
+            log.error(f'重試後串流仍被拒，跳過: {state.current["title"]}')
+
         # Repeat 處理
         if state.current:
             # repeat one：用戶主動 skip 時繞過，直接播下一首
@@ -721,6 +733,46 @@ class MusicCog(commands.Cog):
             state.current = None
             log.info('Autoplay: 3 輪都起不來，停止')
         return
+
+    START_DEATH_SECS = 3.0  # 起播後這麼短就結束 → 視為串流開不起來（403 約 0.05s 退出）
+
+    def _died_on_start(self, state: 'GuildMusicState') -> bool:
+        """目前這曲是不是「剛起播就結束」且非使用者操作造成（/skip 設 repeat_skip，
+        /stop、/disconnect 清 current）。每曲只重試一次。"""
+        return not state.start_retried and self._start_died(state)
+
+    def _start_died(self, state: 'GuildMusicState') -> bool:
+        """目前這曲是不是起播 START_DEATH_SECS 內就結束（不管是否已重試過）。"""
+        song = state.current
+        if song is None or state.repeat_skip:
+            return False
+        if state.current_started_mono <= 0:
+            return False
+        if song.get('duration') and song['duration'] <= self.START_DEATH_SECS * 2:
+            return False  # 本來就極短的音檔
+        return time.monotonic() - state.current_started_mono < self.START_DEATH_SECS
+
+    async def _retry_start(self, guild_id: int, voice_client, state: 'GuildMusicState',
+                           token: int) -> bool:
+        """重抓串流 URL 重播目前這曲。成功起播回 True；失敗回 False 讓 caller 照常換下一首。"""
+        song = dict(state.current)
+        log.warning(f'起播即結束（串流 URL 可能被拒），重抓 URL 重試: {song["title"]}')
+        song['url'] = ''
+        try:
+            await self._ensure_stream_url(song)
+        except Exception as e:
+            log.error(f'重試重抓 URL 失敗，換下一首: {e}')
+            return False
+        if state.stop_token != token:
+            return True  # /stop 介入 → 什麼都別播
+        if voice_client.is_playing() or voice_client.is_paused():
+            return True  # /play 已搶先起播
+        try:
+            self._start_song(guild_id, voice_client, state, song, is_retry=True)
+        except Exception as e:
+            log.error(f'重試起播失敗，換下一首: {e}')
+            return False
+        return True
 
     def _mark_failed(self, song: dict, state: 'GuildMusicState') -> None:
         """失敗的候選記進歷史，避免下一輪又用 innertube 挑回同一首。"""
@@ -1166,6 +1218,26 @@ class MusicCog(commands.Cog):
         embed.set_footer(text=f'查詢時間：{datetime.now(timezone.utc).strftime("%H:%M:%S")} UTC')
         await interaction.response.send_message(embed=embed)
 
+    @app_commands.command(name='come', description='讓 Bot 移到你所在的語音頻道')
+    async def come(self, interaction: discord.Interaction):
+        if not interaction.user.voice or interaction.user.voice.channel is None:
+            await interaction.response.send_message('❌ 請先加入一個語音頻道！', ephemeral=True)
+            return
+        target = interaction.user.voice.channel
+        vc = interaction.guild.voice_client
+        if vc is not None and vc.channel == target:
+            await interaction.response.send_message(f'✅ 我已經在 **{target.name}** 了', ephemeral=True)
+            return
+        await interaction.response.defer()
+        if vc is None:
+            await target.connect()
+        else:
+            await vc.move_to(target)   # 移頻道不會中斷正在播的歌
+        state = self.get_state(interaction.guild_id)
+        state.voice_channel_id = target.id   # watchdog 斷線重連要回新頻道
+        self._manual_discard.discard(interaction.guild_id)
+        await interaction.followup.send(f'🚚 已移到 **{target.name}**')
+
     @app_commands.command(name='disconnect', description='讓 Bot 離開語音頻道')
     async def disconnect(self, interaction: discord.Interaction):
         vc = interaction.guild.voice_client
@@ -1267,7 +1339,7 @@ class MusicCog(commands.Cog):
                     if state.queue:
                         await self._play_next(guild_id, client)
                 except Exception as e:
-                    log.error(f'❌ Voice 重連失敗 [{guild.name}]: {e}')
+                    log.error(f'❌ Voice 重連失敗 [{guild.name}]: {e!r}')
 
 
 async def setup(bot: commands.Bot):

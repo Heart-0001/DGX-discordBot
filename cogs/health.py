@@ -10,7 +10,7 @@ from discord.ext import commands
 log = logging.getLogger(__name__)
 
 # 健檢腳本由 Hermes 每日排程執行，執行後會把報告寫到 REPORT_PATH。
-HEALTHCHECK_SCRIPT = '/home/yyst/.hermes/scripts/discordbot_healthcheck.sh'
+HEALTHCHECK_SCRIPT = '/home/heart/discordbot/scripts/healthcheck.sh'
 REPORT_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                            'data', 'healthcheck_latest.txt')
 MAX_REPORT_CHARS = 3800  # embed description 上限 4096，扣掉 code block 圍欄與省略提示

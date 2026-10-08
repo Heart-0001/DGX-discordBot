@@ -1,0 +1,124 @@
+:root {
+  --fg: #fff;
+  --dim: rgba(255, 255, 255, .32);
+  --ease: cubic-bezier(.22, .8, .24, 1);
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; overflow: hidden; background: #111; color: var(--fg);
+  font-family: -apple-system, "SF Pro Display", "PingFang TC", "Noto Sans TC", "Noto Sans JP", "Microsoft JhengHei", sans-serif;
+  -webkit-font-smoothing: antialiased; user-select: none; }
+
+/* ── 模糊流動背景 ── */
+#bg { position: fixed; inset: 0; overflow: hidden; background: #222; }
+#bg img { position: absolute; width: 150vmax; height: 150vmax; left: 50%; top: 50%;
+  object-fit: cover; filter: blur(80px) saturate(1.8) brightness(.7); opacity: 0;
+  transition: opacity 1.2s ease; }
+#bg img.show { opacity: 1; }
+#bg-img  { animation: spin 40s linear infinite; }
+#bg-img2 { animation: spin 55s linear infinite reverse; mix-blend-mode: screen; }
+#bg::after { content: ""; position: absolute; inset: 0; background: rgba(0, 0, 0, .25); }
+@keyframes spin { from { transform: translate(-50%, -50%) rotate(0); } to { transform: translate(-50%, -50%) rotate(360deg); } }
+
+/* ── 版面：寬螢幕左右、窄螢幕上下 ── */
+#app { position: relative; z-index: 1; height: 100%; display: grid;
+  grid-template-columns: minmax(240px, 38%) 1fr; gap: 5vw; padding: 6vh 6vw; align-items: center; }
+#info { display: flex; flex-direction: column; gap: 18px; }
+#cover { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 12px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, .45); background: rgba(255, 255, 255, .08);
+  transition: transform .6s var(--ease); }
+#app.paused #cover { transform: scale(.92); }
+#title { font-size: clamp(18px, 2.2vw, 28px); font-weight: 700; line-height: 1.25;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+#artist { font-size: clamp(14px, 1.6vw, 20px); color: rgba(255, 255, 255, .65); margin-top: 4px; }
+#bar { height: 6px; border-radius: 3px; background: rgba(255, 255, 255, .2); overflow: hidden; }
+#bar-fill { height: 100%; width: 0; background: rgba(255, 255, 255, .85); }
+#times { display: flex; justify-content: space-between; margin-top: 6px;
+  font-size: 12px; color: rgba(255, 255, 255, .55); font-variant-numeric: tabular-nums; }
+
+/* ── 歌詞 ── */
+#lyrics-wrap { position: relative; height: 100%; overflow: hidden;
+  mask-image: linear-gradient(transparent, #000 14%, #000 80%, transparent);
+  -webkit-mask-image: linear-gradient(transparent, #000 14%, #000 80%, transparent); }
+#lyrics { position: absolute; left: 0; right: 0; top: 0; will-change: transform;
+  transition: transform .7s var(--ease); }
+.line { font-size: clamp(24px, 3.4vw, 46px); font-weight: 800; line-height: 1.22;
+  padding: .32em 0; color: var(--dim); transform-origin: left center;
+  transition: color .45s ease, transform .6s var(--ease), filter .6s ease, opacity .6s ease;
+  transform: scale(.94); filter: blur(var(--blur, 0px)); }
+.line.active { color: var(--fg); transform: scale(1); filter: none;
+  text-shadow: 0 0 24px rgba(255, 255, 255, .25); }
+.line.past { opacity: .75; }
+/* 間奏三個點 */
+.line.gap { display: flex; gap: .3em; height: 0; padding: 0; overflow: hidden;
+  transition: height .5s var(--ease), padding .5s var(--ease); }
+.line.gap.active { height: 1.6em; padding: .3em 0; }
+.line.gap i { width: .32em; height: .32em; border-radius: 50%; background: currentColor;
+  animation: breathe 1.8s ease-in-out infinite; }
+.line.gap i:nth-child(2) { animation-delay: .25s; }
+.line.gap i:nth-child(3) { animation-delay: .5s; }
+@keyframes breathe { 0%, 100% { opacity: .35; transform: scale(.8); } 50% { opacity: 1; transform: scale(1.1); } }
+
+/* 純文字歌詞(沒有時間軸) */
+#lyrics.plain { position: static; height: 100%; overflow-y: auto; padding: 14% 0 30%;
+  white-space: pre-line; transition: none; }
+#lyrics.plain::-webkit-scrollbar { display: none; }
+#lyrics.plain .line { color: rgba(255, 255, 255, .8); transform: none; font-size: clamp(18px, 2.4vw, 30px); font-weight: 700; }
+
+#status { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  font-size: clamp(18px, 2.4vw, 28px); font-weight: 700; color: rgba(255, 255, 255, .55); text-align: center; white-space: pre-line; pointer-events: none; }
+
+/* 沒在播 */
+#app.idle { grid-template-columns: 1fr; }
+#app.idle #info, #app.idle #lyrics { display: none; }
+
+/* 窄畫面 / Discord 小視窗 */
+@media (max-width: 720px), (max-aspect-ratio: 1/1) {
+  #app { grid-template-columns: 1fr; grid-template-rows: auto 1fr; gap: 3vh; padding: 4vh 6vw; align-items: stretch; }
+  #info { display: grid; grid-template-columns: 64px 1fr; grid-template-areas: "cover meta" "prog prog"; gap: 10px 14px; align-items: center; }
+  #cover { grid-area: cover; width: 64px; border-radius: 8px; }
+  #meta { grid-area: meta; min-width: 0; }
+  #progress { grid-area: prog; }
+  .line { font-size: clamp(22px, 6.5vw, 36px); }
+}
+
+/* ── 小視窗(PiP / 右上角縮圖)：上面一小條資訊，下面放大目前這句 + 淡淡的下一句 ── */
+/* 由 main.js 加上 html.pip：Discord 回報 PiP 模式，或畫面高度 <= 360px */
+html.pip #app { grid-template-columns: 1fr; grid-template-rows: auto 1fr; gap: 4px; padding: 10px 12px 8px; align-items: stretch; }
+html.pip #info { display: grid; grid-template-columns: 44px 1fr; grid-template-areas: "cover meta" "prog prog"; gap: 4px 8px; align-items: center; }
+html.pip #cover { grid-area: cover; width: 44px; border-radius: 6px; box-shadow: none; }
+html.pip #meta { grid-area: meta; min-width: 0; }
+html.pip #title { font-size: 14px; -webkit-line-clamp: 1; }
+html.pip #artist { font-size: 12px; margin-top: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+html.pip #progress { grid-area: prog; display: flex; align-items: center; gap: 6px; }
+html.pip #bar { height: 3px; flex: 1; order: 1; }
+html.pip #times { display: contents; font-size: 10px; }
+html.pip #t-cur { order: 0; }
+html.pip #t-left { order: 2; }
+html.pip #t-cur, html.pip #t-left { font-size: 11px; color: rgba(255, 255, 255, .6); font-variant-numeric: tabular-nums; }
+html.pip #lyrics-wrap { mask-image: none; -webkit-mask-image: none; display: flex; align-items: center; min-height: 0; }
+html.pip #lyrics { position: static; transform: none !important; transition: none; width: 100%; }
+html.pip .line { display: none; transform: none; filter: none; padding: 0; }
+html.pip .line.active { display: block; font-size: clamp(16px, 12.5vh, 44px); line-height: 1.2; }
+html.pip .line.active + .line:not(.gap) { display: block; margin-top: .35em; font-size: clamp(11px, 7vh, 24px);
+  color: rgba(255, 255, 255, .45); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+html.pip .line.gap:not(.active) { display: none; }
+html.pip .line.gap.active { display: flex; height: auto; padding: 0; }
+html.pip #lyrics.plain { padding: 0; }
+html.pip #lyrics.plain .line { display: block; font-size: 13px; }
+html.pip #status { font-size: 13px; }
+html.pip #offset { display: none; }
+
+/* ── 延遲微調 ── */
+#offset { position: fixed; right: 14px; bottom: 12px; z-index: 2; display: flex; align-items: center; gap: 6px;
+  padding: 4px 6px; border-radius: 20px; background: rgba(0, 0, 0, .35); backdrop-filter: blur(10px);
+  font-size: 12px; color: rgba(255, 255, 255, .8); opacity: .0; transition: opacity .3s; }
+body:hover #offset, #offset.show { opacity: 1; }
+#offset button { width: 24px; height: 24px; border: 0; border-radius: 50%; cursor: pointer;
+  background: rgba(255, 255, 255, .15); color: #fff; font-size: 15px; line-height: 1; }
+#offset button:hover { background: rgba(255, 255, 255, .3); }
+#off-val { min-width: 3.4em; text-align: center; font-variant-numeric: tabular-nums; }
+
+@media (prefers-reduced-motion: reduce) {
+  #bg img { animation: none; }
+  #lyrics, .line { transition: none; }
+}

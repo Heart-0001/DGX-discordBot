@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>同步歌詞</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="bg"><img id="bg-img" alt=""><img id="bg-img2" alt=""></div>
+  <main id="app" class="idle">
+    <section id="info">
+      <img id="cover" alt="">
+      <div id="meta">
+        <div id="title"></div>
+        <div id="artist"></div>
+      </div>
+      <div id="progress">
+        <div id="bar"><div id="bar-fill"></div></div>
+        <div id="times"><span id="t-cur">0:00</span><span id="t-left">-0:00</span></div>
+      </div>
+    </section>
+    <section id="lyrics-wrap">
+      <div id="lyrics"></div>
+      <div id="status"></div>
+    </section>
+  </main>
+  <div id="offset">
+    <button id="off-minus" title="歌詞慢一點">−</button>
+    <span id="off-val">0.0s</span>
+    <button id="off-plus" title="歌詞快一點">+</button>
+  </div>
+  <script type="module" src="main.js"></script>
+</body>
+</html>

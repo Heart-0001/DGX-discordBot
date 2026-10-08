@@ -24,7 +24,7 @@ intents.message_content = True
 intents.voice_states = True
 
 bot = commands.Bot(command_prefix='!', intents=intents)
-EXTENSIONS = ('cogs.music', 'cogs.bigtwo', 'cogs.uno', 'cogs.health')
+EXTENSIONS = ('cogs.music', 'cogs.lyrics', 'cogs.bigtwo', 'cogs.uno', 'cogs.health')
 
 
 bot.start_time = datetime.now(timezone.utc)
@@ -37,9 +37,12 @@ async def on_ready():
         bot.tree.copy_global_to(guild=guild)
         synced = await bot.tree.sync(guild=guild)
         log.info(f'已同步 {len(synced)} 個指令到伺服器: {guild.name}')
-    # 2. 清掉 Discord 上的 global 指令，避免與 guild 版重複出現
+    # 2. 清掉 Discord 上的 global 指令，避免與 guild 版重複出現。
+    #    逐一刪除並跳過 Activity 的 Entry Point 指令(type 4)：它不能用 bulk 清掉，也不該刪。
     bot.tree.clear_commands(guild=None)
-    await bot.tree.sync()
+    for cmd in await bot.http.get_global_commands(bot.application_id):
+        if cmd.get('type') != 4:
+            await bot.http.delete_global_command(bot.application_id, cmd['id'])
     log.info(f'✅ {bot.user} 已上線！連接到 {len(bot.guilds)} 個伺服器')
 
 

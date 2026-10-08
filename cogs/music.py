@@ -34,11 +34,34 @@ _PENALIZED = re.compile(
 )
 
 
-def make_source(url: str, volume: float, seek: float = 0.0) -> discord.PCMVolumeTransformer:
+class TrackedSource(discord.PCMVolumeTransformer):
+    """PCMVolumeTransformer + 計算實際送出的 20ms 音框數，給 /lyrics 對時用(暫停時不會增加)。"""
+
+    FRAME_SECS = 0.02
+
+    def __init__(self, original, volume: float, start_at: float = 0.0):
+        super().__init__(original, volume=volume)
+        self.start_at = start_at
+        self.frames = 0
+
+    def read(self) -> bytes:
+        data = super().read()
+        if data:
+            self.frames += 1
+        return data
+
+    @property
+    def position(self) -> float:
+        return self.start_at + self.frames * self.FRAME_SECS
+
+
+def make_source(url: str, volume: float, seek: float = 0.0) -> TrackedSource:
     before = FFMPEG_BEFORE_OPTS
     if seek > 0.3:
         before = f'{FFMPEG_BEFORE_OPTS} -ss {seek:.3f}'  # 斷點續播:輸入定位,從 seek 秒開始
-    return discord.PCMVolumeTransformer(
+    else:
+        seek = 0.0
+    return TrackedSource(
         discord.FFmpegPCMAudio(
             url,
             executable=FFMPEG_PATH,
@@ -46,6 +69,7 @@ def make_source(url: str, volume: float, seek: float = 0.0) -> discord.PCMVolume
             options=FFMPEG_OPTS,
         ),
         volume=volume,
+        start_at=seek,
     )
 
 
@@ -94,6 +118,24 @@ class MusicCog(commands.Cog):
 
     def get_state(self, guild_id: int) -> GuildMusicState:
         return self._states.setdefault(guild_id, GuildMusicState())
+
+    def get_playback(self, guild_id: int) -> dict | None:
+        """給 /lyrics 用的播放快照；沒在播回 None。"""
+        state = self._states.get(guild_id)
+        guild = self.bot.get_guild(guild_id)
+        vc = guild.voice_client if guild else None
+        if state is None or state.current is None or vc is None:
+            return None
+        if not (vc.is_playing() or vc.is_paused()):
+            return None
+        src = vc.source
+        position = src.position if isinstance(src, TrackedSource) else 0.0
+        return {
+            'song': state.current,
+            'position': position,
+            'paused': vc.is_paused(),
+            'channel_id': vc.channel.id if vc.channel else None,
+        }
 
     @staticmethod
     def _stream_args(query: str) -> list[str]:

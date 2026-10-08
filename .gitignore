@@ -25,3 +25,6 @@ env/
 data/*.json
 data/healthcheck_latest.txt
 *.whl
+
+# Activity frontend (dist/ 有 commit，bot 直接 serve)
+activity/node_modules/

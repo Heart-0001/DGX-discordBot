@@ -1,0 +1,13 @@
+{
+  "name": "discordbot-lyrics-activity",
+  "private": true,
+  "scripts": {
+    "build": "esbuild src/main.js --bundle --minify --format=esm --target=es2020 --outfile=dist/main.js && cp src/index.html src/style.css dist/ && V=$(date +%s) && sed -i \"s/main.js\\\"/main.js?v=$V\\\"/; s/style.css\\\"/style.css?v=$V\\\"/\" dist/index.html"
+  },
+  "dependencies": {
+    "@discord/embedded-app-sdk": "^2.5.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2"
+  }
+}

@@ -108,6 +108,13 @@ html.pip #lyrics.plain .line { display: block; font-size: 13px; }
 html.pip #status { font-size: 13px; }
 html.pip #offset { display: none; }
 
+/* 小視窗換句動畫：新的一句由下往上滑入。兩個 selector 用不同 animation-name，
+   「下一句」變成「目前這句」時 animation-name 改變，動畫才會重新播放 */
+html.pip .line.active { animation: pip-in .45s var(--ease) both; }
+html.pip .line.active + .line:not(.gap) { animation: pip-next-in .45s var(--ease) both; }
+@keyframes pip-in { from { transform: translateY(.7em); opacity: .35; } to { transform: none; opacity: 1; } }
+@keyframes pip-next-in { from { transform: translateY(1em); opacity: 0; } to { transform: none; opacity: 1; } }
+
 /* ── 延遲微調 ── */
 #offset { position: fixed; right: 14px; bottom: 12px; z-index: 2; display: flex; align-items: center; gap: 6px;
   padding: 4px 6px; border-radius: 20px; background: rgba(0, 0, 0, .35); backdrop-filter: blur(10px);
@@ -121,4 +128,5 @@ body:hover #offset, #offset.show { opacity: 1; }
 @media (prefers-reduced-motion: reduce) {
   #bg img { animation: none; }
   #lyrics, .line { transition: none; }
+  html.pip .line { animation: none !important; }
 }

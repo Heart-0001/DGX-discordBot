@@ -17,6 +17,7 @@ import logging
 import os
 import re
 import threading
+import time
 from collections import OrderedDict
 from functools import partial
 from typing import Optional
@@ -82,6 +83,8 @@ class LyricsCog(commands.Cog):
         app.router.add_get('/api/config', self._h_config)
         app.router.add_get('/api/thumb', self._h_thumb)
         app.router.add_get('/ws', self._h_ws)
+        app.router.add_get('/api/mode', self._h_mode)
+        app.router.add_get('/lol/{tail:.*}', self._h_lol)
         app.router.add_get('/', self._h_index)
         if os.path.isdir(DIST_DIR):
             app.router.add_static('/', DIST_DIR)
@@ -272,7 +275,7 @@ class LyricsCog(commands.Cog):
     @staticmethod
     async def _no_cache(request, response):
         """Cloudflare 預設會把 .js/.css 快取 4 小時，改版後看不到；封面除外(有自己的 max-age)。"""
-        if not request.path.startswith('/api/thumb'):
+        if not request.path.startswith(('/api/thumb', '/lol/img/')):
             response.headers['Cache-Control'] = 'no-cache'
 
     async def _h_index(self, request):
@@ -283,6 +286,26 @@ class LyricsCog(commands.Cog):
 
     async def _h_config(self, request):
         return web.json_response({'client_id': str(self.bot.application_id or '')})
+
+    async def _h_mode(self, request):
+        """這個語音頻道最後用哪個指令開的 Activity(/lyrics 或 /lol)，前端據此切畫面。"""
+        modes = getattr(self.bot, 'activity_modes', {})
+        try:
+            cid = int(request.query.get('c') or 0)
+        except ValueError:
+            cid = 0
+        mode = modes.get(cid)
+        if cid and hasattr(self.bot, 'activity_seen'):
+            self.bot.activity_seen[cid] = time.monotonic()
+        if request.query.get('first'):
+            log.info(f"Activity 開啟: 頻道 {request.query.get('c')} / 伺服器 {request.query.get('g')} → {mode or 'lyrics'}")
+        return web.json_response({'mode': mode or 'lyrics'})
+
+    async def _h_lol(self, request):
+        lol = self.bot.get_cog('LolCog')
+        if not lol:
+            raise web.HTTPServiceUnavailable(text='LoL 模組未載入')
+        return await lol.handle(request, request.match_info['tail'])
 
     def _snapshot(self, guild_id: int) -> Optional[dict]:
         music = self.bot.get_cog('MusicCog')
@@ -380,6 +403,13 @@ class LyricsCog(commands.Cog):
     async def lyrics(self, interaction: discord.Interaction):
         if not interaction.user.voice:
             await interaction.response.send_message('❌ 請先加入語音頻道再開歌詞畫面', ephemeral=True)
+            return
+        set_mode = getattr(self.bot, 'set_activity_mode', None)
+        if set_mode:
+            set_mode(interaction, 'lyrics')
+        # Activity 已經開著 → 不再叫 Discord 開(會留下一行空的「使用了 /lyrics」)，畫面 3 秒內自己切
+        if getattr(self.bot, 'activity_open', lambda i: False)(interaction):
+            await interaction.response.send_message('✅ 已切換成歌詞畫面', ephemeral=True)
             return
         try:
             await interaction.response.launch_activity()

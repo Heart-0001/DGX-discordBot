@@ -24,6 +24,7 @@ env/
 # Runtime data (game stats written by the bot)
 data/*.json
 data/healthcheck_latest.txt
+data/lol_assets/
 *.whl
 
 # Activity frontend (dist/ 有 commit，bot 直接 serve)

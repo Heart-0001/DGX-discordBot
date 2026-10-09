@@ -1,4 +1,5 @@
 import { DiscordSDK } from '@discord/embedded-app-sdk';
+import { startLol, stopLol } from './lol.js';
 
 // 機器人量到的位置 = 已送出的音框。實測(2026-10-08)歌詞要比這個位置早 0.25 秒亮才對得上耳朵，
 // 所以預設提前 0.25 秒；使用者可用右下角 ± 再微調(存在 localStorage)。
@@ -197,10 +198,14 @@ function frame() {
 window.addEventListener('resize', () => { const i = activeIdx; activeIdx = -2; setActive(i); });
 
 // ── WebSocket ──
+let lyricsWs = null;
+let lyricsOn = false;
 function connect(guildId) {
+  if (!lyricsOn) return;
   const url = new URL(`ws?g=${encodeURIComponent(guildId)}`, location.href);
   url.protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
   const ws = new WebSocket(url);
+  lyricsWs = ws;
   ws.onmessage = (ev) => {
     const m = JSON.parse(ev.data);
     if (m.type === 'idle') {
@@ -219,14 +224,55 @@ function connect(guildId) {
     }
   };
   ws.onclose = () => {
+    if (lyricsWs !== ws || !lyricsOn) return;   // 已切到 LoL 模式，不重連
     showStatus('連線中斷，重新連線中…');
     setTimeout(() => connect(guildId), 2000);
   };
 }
 
+// ── 模式切換：同一個 Activity 依頻道最近用的指令顯示 /lyrics 或 /lol ──
+let mode = null;
+let rafStarted = false;
+function setMode(m, guildId) {
+  if (m === mode) return;
+  mode = m;
+  document.documentElement.classList.toggle('mode-lol', m === 'lol');
+  if (m === 'lol') {
+    lyricsOn = false;
+    const ws = lyricsWs; lyricsWs = null;
+    if (ws) ws.close();
+    track = null; lines = [];
+    startLol($('lol'));
+    return;
+  }
+  stopLol();
+  if (!guildId) {
+    showStatus('請在 Discord 伺服器的語音頻道中開啟');
+    return;
+  }
+  lyricsOn = true;
+  app.classList.add('idle');
+  lyricsEl.innerHTML = '';
+  showStatus('連線中…');
+  connect(guildId);
+  if (!rafStarted) { rafStarted = true; requestAnimationFrame(frame); }
+}
+
+// 部署新版後，開著的 Activity 會一直跑舊程式 → 每分鐘看一下 index.html 的版本號，變了就重新載入
+const BUILD = new URL(import.meta.url).searchParams.get('v');
+async function checkUpdate() {
+  try {
+    const html = await fetch('./', { cache: 'no-store' }).then((r) => r.text());
+    const v = (html.match(/main\.js\?v=(\d+)/) || [])[1];
+    if (BUILD && v && v !== BUILD) location.reload();
+  } catch { /* 網路斷了就下次再看 */ }
+}
+setInterval(checkUpdate, 60000);
+
 async function main() {
   const params = new URLSearchParams(location.search);
   let guildId = params.get('g') || params.get('guild_id');
+  updatePip();
   if (params.has('frame_id')) {
     // 在 Discord 裡：完成 SDK 握手，guild 從 SDK 拿
     const cfg = await fetch('api/config').then((r) => r.json());
@@ -239,15 +285,25 @@ async function main() {
         updatePip();
       });
     } catch (e) { console.warn('layout mode 訂閱失敗，改用尺寸判斷', e); }
-  }
-  if (!guildId) {
-    showStatus('請在 Discord 伺服器的語音頻道中開啟');
+    // 問機器人這個語音頻道現在是 /lol 還是 /lyrics，之後每 3 秒再問一次(可能中途換指令)
+    let first = true;
+    const ask = async () => {
+      try {
+        const q = `c=${encodeURIComponent(sdk.channelId || '')}${first ? '&first=1' : ''}`;
+        first = false;
+        const r = await fetch(`api/mode?${q}`);
+        const j = await r.json();
+        setMode(j.mode === 'lol' ? 'lol' : 'lyrics', guildId);
+      } catch (e) {
+        if (!mode) setMode('lyrics', guildId);
+      }
+    };
+    await ask();
+    setInterval(ask, 3000);
     return;
   }
-  showStatus('連線中…');
-  updatePip();
-  connect(guildId);
-  requestAnimationFrame(frame);
+  // 瀏覽器測試：?mode=lol 強制 LoL 模式
+  setMode(params.get('mode') === 'lol' ? 'lol' : 'lyrics', guildId);
 }
 
 main().catch((e) => showStatus(`載入失敗：${e.message || e}`));

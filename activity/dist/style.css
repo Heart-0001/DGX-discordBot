@@ -130,3 +130,252 @@ body:hover #offset, #offset.show { opacity: 1; }
   #lyrics, .line { transition: none; }
   html.pip .line { animation: none !important; }
 }
+
+/* ════════════════════════ LoL 模式 (lol.js) ════════════════════════ */
+html.mode-lol #bg, html.mode-lol #app, html.mode-lol #offset { display: none; }
+#lol[hidden] { display: none !important; }
+#lol {
+  --gold: #c8aa6e; --gold2: #f0e6d2; --blue: #0ac8b9; --ally: #4fa3ff; --enemy: #ff5a5a;
+  --panel: rgba(16, 26, 44, .78); --line: rgba(200, 170, 110, .22); --mut: rgba(240, 230, 210, .55);
+  --row: clamp(28px, 6.6vh, 52px);
+  --items-w: calc(var(--row) * .62 * 7 + 18px); --augs-w: calc(var(--row) * .56 * 5 + 12px);
+  position: fixed; inset: 0; z-index: 3; display: flex; flex-direction: column;
+  background: radial-gradient(120% 90% at 50% 0%, #13233f 0%, #0a1324 55%, #050a14 100%);
+  color: var(--gold2); font-size: clamp(11px, 1.9vh, 15px); overflow: hidden;
+}
+#lol small { font-size: .8em; opacity: .65; font-weight: 400; }
+#lol .dim { color: var(--mut); }
+#lol b { font-weight: 700; }
+
+/* 圖示外框 + 404 替代文字 */
+#lol .ph { display: inline-flex; align-items: center; justify-content: center; flex: none; overflow: hidden;
+  background: rgba(255, 255, 255, .06); color: var(--mut); font-size: .8em; font-weight: 700; vertical-align: middle; }
+#lol .ph img { width: 100%; height: 100%; object-fit: cover; display: block; }
+#lol .ph.champ { width: calc(var(--row) - 6px); height: calc(var(--row) - 6px); border-radius: 50%; border: 2px solid rgba(200, 170, 110, .55); }
+#lol .ph.champ.big { width: clamp(44px, 11vh, 84px); height: clamp(44px, 11vh, 84px); border-radius: 10px; font-size: 1.6em; }
+#lol .ph.champ.sm { width: clamp(28px, 6vh, 44px); height: clamp(28px, 6vh, 44px); border-radius: 6px; border-width: 1px; }
+#lol .ph.item { width: calc(var(--row) * .62); height: calc(var(--row) * .62); border-radius: 4px; border: 1px solid rgba(200, 170, 110, .25); }
+#lol .ph.item.empty { background: rgba(0, 0, 0, .35); border-color: rgba(255, 255, 255, .06); }
+#lol .ph.spell { width: calc(var(--row) * .42); height: calc(var(--row) * .42); border-radius: 3px; font-size: .7em; }
+#lol .ph.aug { width: calc(var(--row) * .56); height: calc(var(--row) * .56); border-radius: 50%; border: 1px solid #888; background: #1a1f2a; padding: 2px; }
+#lol .ph.aug img { object-fit: contain; }
+#lol .ph.aug.silver { border-color: #b8c4d0; }
+#lol .ph.aug.gold { border-color: #e2b84a; box-shadow: 0 0 6px rgba(226, 184, 74, .35); }
+#lol .ph.aug.prism { border-color: #c58cff; box-shadow: 0 0 6px rgba(197, 140, 255, .5); }
+#lol .ph.crest { width: 1.7em; height: 1.7em; background: none; }
+#lol .ph.crest img { object-fit: contain; }
+#lol .ph.crest.noimg { display: none; }
+
+#lol .skel { display: inline-block; width: 5em; height: .9em; border-radius: 4px; vertical-align: middle;
+  background: linear-gradient(90deg, rgba(255,255,255,.06), rgba(255,255,255,.16), rgba(255,255,255,.06)); background-size: 200% 100%;
+  animation: lol-skel 1.2s linear infinite; }
+#lol .skel.wide { width: 9em; }
+@keyframes lol-skel { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+
+#lol .badge { display: inline-block; padding: .15em .6em; border-radius: 999px; font-size: .85em; white-space: nowrap;
+  background: rgba(10, 200, 185, .14); color: var(--blue); border: 1px solid rgba(10, 200, 185, .35); }
+#lol .badge.gold { background: rgba(200, 170, 110, .14); color: var(--gold); border-color: var(--line); }
+#lol .badge.stale { background: rgba(255, 255, 255, .08); color: var(--gold2); border-color: rgba(255, 255, 255, .2); }
+
+#lol .rank { display: inline-flex; align-items: center; gap: .3em; white-space: nowrap; }
+#lol .rank.unranked { color: var(--mut); }
+#lol .rank b { color: var(--gold2); }
+#lol .t-iron b, #lol .t-bronze b { color: #c49a7c; }
+#lol .t-silver b { color: #c3ccd6; }
+#lol .t-gold b { color: #f0c96a; }
+#lol .t-platinum b { color: #5fd3c4; }
+#lol .t-emerald b { color: #3ed68a; }
+#lol .t-diamond b { color: #8fb5ff; }
+#lol .t-master b, #lol .t-grandmaster b, #lol .t-challenger b { color: #e59dff; }
+#lol .wr { white-space: nowrap; color: var(--gold2); }
+#lol .wr.good b { color: #5fe08a; }
+#lol .wr.bad b { color: #ff7a7a; }
+
+/* 頂列 */
+#lol .lol-top { flex: none; display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 12px;
+  padding: 8px 16px; border-bottom: 1px solid var(--line); background: rgba(0, 0, 0, .3); }
+#lol .lt-left { min-width: 0; }
+#lol .lt-q { color: var(--gold); font-weight: 700; letter-spacing: .04em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: block; }
+#lol .lt-right { display: flex; justify-content: flex-end; gap: 8px; align-items: center; }
+#lol .lt-title { font-size: 1.25em; font-weight: 800; color: var(--gold2); letter-spacing: .1em; }
+#lol .hdr-gold { color: #f0c96a; font-weight: 700; font-variant-numeric: tabular-nums; display: none; }
+#lol .score { display: flex; align-items: center; gap: .7em; font-size: 1.5em; font-weight: 800; font-variant-numeric: tabular-nums; }
+#lol .score .al { color: var(--ally); }
+#lol .score .en { color: var(--enemy); }
+#lol .clock { font-size: .75em; padding: .1em .55em; border-radius: 6px; background: rgba(0, 0, 0, .45); color: var(--gold2); border: 1px solid var(--line); }
+#lol .dots { display: inline-flex; gap: 3px; margin-left: 6px; }
+#lol .dots i { width: 5px; height: 5px; border-radius: 50%; background: var(--gold); animation: breathe 1.4s infinite; }
+#lol .dots i:nth-child(2) { animation-delay: .2s; }
+#lol .dots i:nth-child(3) { animation-delay: .4s; }
+
+#lol .lol-body { flex: 1; min-height: 0; padding: 12px 16px; }
+
+/* 閒置 */
+#lol .lol-idle { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; text-align: center; padding: 16px; }
+#lol .lol-logo { width: clamp(48px, 16vh, 110px); height: clamp(48px, 16vh, 110px); border-radius: 50%; display: grid; place-items: center;
+  font-size: clamp(22px, 8vh, 54px); color: var(--gold); border: 2px solid var(--gold); box-shadow: 0 0 30px rgba(200, 170, 110, .25), inset 0 0 20px rgba(200, 170, 110, .15); }
+#lol .lol-idle-text { font-size: clamp(16px, 4.4vh, 32px); font-weight: 800; color: var(--gold2); }
+#lol .lol-idle-hint { color: var(--mut); }
+
+/* 選角 / 讀取：玩家卡片 */
+#lol .cs-body { display: flex; flex-direction: column; gap: 14px; overflow: auto; }
+#lol .cards { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; }
+#lol .pcard { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 16px 10px; text-align: center;
+  border-radius: 10px; background: var(--panel); border: 1px solid var(--line); min-width: 0; }
+#lol .pcard.me { border-color: var(--gold); box-shadow: 0 0 18px rgba(200, 170, 110, .3); background: linear-gradient(180deg, rgba(200,170,110,.16), var(--panel)); }
+#lol .pc-info { display: flex; flex-direction: column; gap: 6px; align-items: center; min-width: 0; width: 100%; }
+#lol .pc-name { font-weight: 700; font-size: 1.1em; max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#lol .pc-sub { display: flex; gap: 8px; color: var(--mut); font-size: .9em; }
+#lol .pc-champ { color: var(--gold); }
+#lol .pc-wr { font-size: .9em; white-space: normal; }
+#lol .pc-wr .wr { white-space: normal; }
+#lol .pc-wr .compact { display: none; }
+html.pip #lol .pc-wr .compact { display: inline; }
+#lol .hid { color: var(--mut); font-style: italic; }
+#lol .bench { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 10px 12px; border-radius: 10px; background: rgba(0, 0, 0, .25); border: 1px solid var(--line); }
+#lol .bench-l { color: var(--gold); font-weight: 700; margin-right: 4px; }
+#lol .enemy-ph { text-align: center; color: var(--mut); padding: 10px; border: 1px dashed rgba(255, 90, 90, .35); border-radius: 10px; }
+#lol .loading .cards { grid-template-columns: repeat(auto-fill, minmax(min(200px, 100%), 1fr)); }
+
+/* 遊戲中 / 結算：表格列 */
+#lol .live-body { display: grid; grid-template-columns: minmax(0, 1fr) clamp(220px, 23vw, 300px); gap: 12px; padding-top: 8px; padding-bottom: 8px; }
+#lol .teams { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+#lol .team { border-radius: 8px; background: var(--panel); border: 1px solid var(--line); overflow: hidden; }
+#lol .team-h { display: flex; justify-content: space-between; padding: 3px 10px; font-weight: 800; letter-spacing: .1em; font-size: .9em; }
+#lol .team.ally .team-h { background: linear-gradient(90deg, rgba(79, 163, 255, .35), transparent); color: #bcd9ff; }
+#lol .team.enemy .team-h { background: linear-gradient(90deg, rgba(255, 90, 90, .32), transparent); color: #ffc4c4; }
+#lol .lrow, #lol .erow { display: grid; align-items: center; gap: 8px; padding: 0 10px; height: var(--row); border-top: 1px solid rgba(255, 255, 255, .05); }
+#lol .lrow { grid-template-columns: var(--row) calc(var(--row) * .42) minmax(0, 1fr) minmax(0, 10em) 6.2em 2.6em var(--items-w); }
+#lol .erow { grid-template-columns: var(--row) calc(var(--row) * .42) minmax(0, 1fr) 6.2em minmax(6em, 9em) 4.4em 2.6em var(--items-w) var(--augs-w); }
+#lol .lhead { height: auto; padding-top: 3px; padding-bottom: 3px; color: var(--mut); font-size: .8em; border-top: 0; background: rgba(0, 0, 0, .2); }
+#lol .lhead .c-items, #lol .lhead .c-augs { display: block; text-align: center; }
+#lol .lhead .c-cs, #lol .lhead .c-gold { text-align: right; }
+#lol .lrow.me, #lol .erow.me { background: linear-gradient(90deg, rgba(200, 170, 110, .22), rgba(200, 170, 110, .04)); box-shadow: inset 3px 0 0 var(--gold); }
+#lol .c-champ { position: relative; display: flex; align-items: center; justify-content: center; }
+#lol .c-champ .lvl { position: absolute; right: -4px; bottom: 0; min-width: 1.5em; padding: 0 2px; font-size: .7em; font-weight: 700; text-align: center;
+  border-radius: 6px; background: #0a1324; border: 1px solid var(--gold); color: var(--gold2); line-height: 1.3; }
+#lol .dead .c-champ .ph { filter: grayscale(1) brightness(.45); }
+#lol .respawn { position: absolute; inset: 0; display: grid; place-items: center; font-weight: 800; font-size: 1.05em; color: #ff8080; text-shadow: 0 0 4px #000, 0 0 2px #000; }
+#lol .dead .c-name .nm { opacity: .6; }
+#lol .c-spells { display: flex; flex-direction: column; gap: 2px; }
+#lol .c-name { min-width: 0; line-height: 1.2; }
+#lol .c-name .nm { font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#lol .c-name .cn { font-size: .8em; color: var(--gold); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#lol .c-prof { display: flex; flex-direction: column; font-size: .85em; line-height: 1.25; min-width: 0; overflow: hidden; }
+#lol .c-prof .ph.crest { width: 1.5em; height: 1.5em; }
+#lol .c-kda { text-align: center; font-variant-numeric: tabular-nums; white-space: nowrap; }
+#lol .kda { color: var(--mut); }
+#lol .kda b { color: var(--gold2); }
+#lol .kda b.d { color: #ff8a8a; }
+#lol .c-cs, #lol .c-gold { text-align: right; font-variant-numeric: tabular-nums; color: var(--gold2); }
+#lol .c-gold { color: #f0c96a; }
+#lol .c-items, #lol .c-augs { display: flex; gap: 3px; }
+#lol .c-dmg { display: flex; flex-direction: column; gap: 3px; font-variant-numeric: tabular-nums; font-size: .9em; }
+#lol .dbar { height: 5px; border-radius: 3px; background: rgba(255, 255, 255, .08); overflow: hidden; }
+#lol .dbar div { height: 100%; background: linear-gradient(90deg, #c8553d, #f0a050); }
+#lol .ally .dbar div { background: linear-gradient(90deg, #2d6fd0, #6fb6ff); }
+
+/* 側欄：自己 + 事件 */
+#lol .side { display: flex; flex-direction: column; gap: 10px; min-height: 0; }
+#lol .self, #lol .feed { border-radius: 8px; background: var(--panel); border: 1px solid var(--line); padding: 8px 10px; }
+#lol .self { display: flex; flex-direction: column; gap: 6px; }
+#lol .self-h, #lol .feed-h { display: flex; justify-content: space-between; color: var(--gold); font-weight: 700; font-size: .9em; }
+#lol .gold-t { color: #f0c96a; font-variant-numeric: tabular-nums; }
+#lol .sbar { position: relative; height: 1.35em; border-radius: 4px; background: rgba(0, 0, 0, .5); overflow: hidden; border: 1px solid rgba(255, 255, 255, .08); }
+#lol .sbar div { position: absolute; inset: 0 auto 0 0; transition: width .4s; }
+#lol .sbar span { position: relative; display: block; text-align: center; font-size: .8em; line-height: 1.65; font-variant-numeric: tabular-nums; text-shadow: 0 0 3px #000; }
+#lol .sbar.hp div { background: linear-gradient(180deg, #4ec46a, #23843b); }
+#lol .sbar.mana div { background: linear-gradient(180deg, #4b8ef0, #2559b8); }
+#lol .sbar.energy div { background: linear-gradient(180deg, #f0d24b, #b89a1e); }
+#lol .sbar.other div, #lol .sbar.none div { background: linear-gradient(180deg, #d06060, #8a2a2a); }
+#lol .feed { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 6px; }
+#lol .feed ul { list-style: none; overflow-y: auto; flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 3px; scrollbar-width: none; }
+#lol .ev { display: flex; gap: 6px; font-size: .85em; line-height: 1.35; padding: 2px 6px; border-left: 3px solid rgba(255, 255, 255, .2); border-radius: 2px; background: rgba(0, 0, 0, .18); }
+#lol .ev time { color: var(--mut); font-variant-numeric: tabular-nums; flex: none; }
+#lol .ev i { font-style: normal; font-size: .85em; }
+#lol .ev i.al { color: var(--ally); }
+#lol .ev i.en { color: var(--enemy); }
+#lol .ev.k-kill.ally { border-left-color: var(--ally); }
+#lol .ev.k-kill.enemy { border-left-color: var(--enemy); }
+#lol .ev.k-multikill { border-left-color: #ff9f40; color: #ffd0a0; }
+#lol .ev.k-ace { border-left-color: #e59dff; color: #f0d0ff; font-weight: 700; }
+#lol .ev.k-turret, #lol .ev.k-inhib { border-left-color: var(--gold); color: #f0dcae; }
+#lol .ev.k-objective { border-left-color: var(--blue); color: #b5f5ee; }
+#lol .ev.k-first { border-left-color: #ff5ab4; color: #ffc2e3; }
+
+/* 結算 */
+#lol .eog-banner { flex: none; display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 12px; padding: 8px 16px; border-bottom: 1px solid var(--line); }
+#lol .eog-banner.win { background: linear-gradient(90deg, transparent, rgba(10, 200, 185, .25), transparent); }
+#lol .eog-banner.loss { background: linear-gradient(90deg, transparent, rgba(200, 60, 60, .28), transparent); }
+#lol .eb-title { grid-column: 2; font-size: clamp(22px, 6vh, 44px); font-weight: 900; letter-spacing: .3em; padding-left: .3em; }
+#lol .win .eb-title { color: #7ff5e8; text-shadow: 0 0 18px rgba(10, 200, 185, .6); }
+#lol .loss .eb-title { color: #ff9a9a; text-shadow: 0 0 18px rgba(255, 70, 70, .5); }
+#lol .eb-meta { grid-column: 1; grid-row: 1; display: flex; flex-direction: column; color: var(--mut); font-size: .9em; }
+#lol .eb-meta span:first-child { color: var(--gold); font-weight: 700; }
+#lol .eb-right { grid-column: 3; display: flex; justify-content: flex-end; }
+#lol .eog-body { display: flex; flex-direction: column; gap: 10px; overflow: auto; padding-top: 10px; }
+#lol .team.won .team-h::after { content: none; }
+
+/* 中等寬度：收掉側欄與牌位欄 */
+@media (max-width: 1060px) {
+  #lol .live-body { grid-template-columns: 1fr; }
+  #lol .side { display: none; }
+  #lol .hdr-gold { display: inline; }
+}
+@media (max-width: 860px) {
+  #lol .c-prof { display: none; }
+  #lol .lrow { grid-template-columns: var(--row) calc(var(--row) * .42) minmax(0, 1fr) 6.2em 2.6em var(--items-w); }
+  #lol .erow { grid-template-columns: var(--row) minmax(0, 1fr) 6em minmax(4em, 7em) 2.6em var(--items-w); }
+  #lol .erow .c-spells, #lol .erow .c-gold, #lol .erow .c-augs { display: none; }
+  #lol .cards { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
+}
+@media (max-width: 640px) {
+  #lol .c-items { display: none; }
+  #lol .lrow { grid-template-columns: var(--row) calc(var(--row) * .42) minmax(0, 1fr) 6.2em 2.6em; }
+  #lol .erow { grid-template-columns: var(--row) minmax(0, 1fr) 6em minmax(4em, 7em) 2.6em; }
+}
+
+/* ── LoL 小視窗(html.pip)：只留重點 ── */
+html.pip #lol { --row: 21px; font-size: 11px; }
+html.pip #lol .lol-top, html.pip #lol .eog-banner { padding: 3px 8px; gap: 6px; }
+html.pip #lol .lt-q { font-size: 10px; }
+html.pip #lol .lt-title { font-size: 12px; letter-spacing: .04em; }
+html.pip #lol .badge { font-size: 9px; padding: 0 .5em; }
+html.pip #lol .lt-right .badge.gold, html.pip #lol .hdr-gold { display: none; }
+html.pip #lol .score { font-size: 15px; gap: .4em; }
+html.pip #lol .lol-body { padding: 4px 6px; }
+html.pip #lol .lhead, html.pip #lol .c-prof, html.pip #lol .c-items, html.pip #lol .c-spells,
+html.pip #lol .c-augs, html.pip #lol .c-gold, html.pip #lol .c-cs, html.pip #lol .c-name .cn, html.pip #lol .side { display: none; }
+html.pip #lol .live-body, html.pip #lol .eog-body { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; padding-top: 4px; overflow: hidden; }
+html.pip #lol .teams { display: contents; }
+html.pip #lol .team-h { padding: 1px 6px; font-size: 10px; }
+html.pip #lol .lrow, html.pip #lol .erow { grid-template-columns: var(--row) minmax(0, 1fr) auto; gap: 5px; padding: 0 5px; }
+html.pip #lol .erow .c-dmg { display: none; }
+html.pip #lol .ph.champ { width: 19px; height: 19px; border-width: 1px; }
+html.pip #lol .c-champ .lvl { display: none; }
+html.pip #lol .respawn { font-size: 10px; }
+html.pip #lol .eb-title { font-size: 18px; letter-spacing: .2em; }
+html.pip #lol .eb-meta { font-size: 9px; }
+html.pip #lol .eb-meta span:last-child { display: none; }
+/* 選角 / 讀取：卡片改成一列一人 */
+html.pip #lol .cs-body { gap: 4px; overflow: hidden; }
+html.pip #lol .cards { grid-template-columns: 1fr; gap: 3px; }
+html.pip #lol .loading .cards { grid-template-columns: 1fr 1fr; }
+html.pip #lol .pcard { flex-direction: row; padding: 2px 6px; gap: 6px; border-radius: 6px; text-align: left; }
+html.pip #lol .ph.champ.big { width: 26px; height: 26px; border-radius: 5px; font-size: 11px; border-width: 1px; }
+html.pip #lol .pc-info { flex-direction: row; align-items: center; gap: 6px; }
+html.pip #lol .pc-name { flex: 1; min-width: 0; font-size: 11px; }
+html.pip #lol .pc-sub, html.pip #lol .bench, html.pip #lol .enemy-ph { display: none; }
+html.pip #lol .pc-rank b, html.pip #lol .pc-rank small, html.pip #lol .pc-rank .unranked { font-size: 10px; }
+html.pip #lol .pc-rank small { display: none; }
+html.pip #lol .pc-wr { font-size: 10px; flex: none; }
+html.pip #lol .pc-wr .wr { white-space: nowrap; }
+html.pip #lol .pc-wr .full { display: none; }
+html.pip #lol .loading .pc-rank { display: none; }
+html.pip #lol .lol-idle { gap: 6px; }
+html.pip #lol .lol-idle-hint { font-size: 10px; }
+
+/* 英雄熟練度 */
+.mastery { color: #c8aa6e; font-size: 0.78em; opacity: 0.9; white-space: nowrap; }
+.pc-mas { min-height: 1.1em; }
+html.pip .mastery, html.pip .pc-mas { display: none; }

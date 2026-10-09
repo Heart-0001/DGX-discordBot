@@ -1,6 +1,6 @@
 # 🎮 DGX Discord Bot
 
-個人多功能 Discord Bot，整合 **音樂播放**（含 Apple Music 風格的**同步歌詞**畫面）、**大老二** 與 **UNO** 兩款多人卡牌遊戲，全部以 slash command 操作。
+個人多功能 Discord Bot，整合 **音樂播放**（含 Apple Music 風格的**同步歌詞**畫面）、**LoL 即時對戰資訊**畫面、**Valorant 戰績**查詢與追蹤、**大老二** 與 **UNO** 兩款多人卡牌遊戲，全部以 slash command 操作。
 
 ---
 
@@ -23,6 +23,20 @@
 - 播放位置以 bot **實際送出的音框**計算，暫停 / 續播 / 換歌都即時跟上
 - 模糊流動封面背景、目前這句高亮、間奏顯示三個點；右下角 ± 可微調延遲
 - 縮成右上角小視窗（PiP）時自動切成精簡版面，長句自動縮字最多兩行
+
+### ⚔️ LoL 對戰資訊（Discord Activity）
+- `/lol` 在語音頻道開啟即時畫面（跟 `/lyrics` 共用同一個 Activity），跟著玩家的客戶端自動切換：
+  - **選角**：隊友的牌位（含本季完整勝敗）、英雄熟練度、近期勝率（客戶端上限 100 場）、**最近 10 場**對局
+  - **遊戲中**：雙方計分板（KDA、裝備、裝備總價推算的經濟）、雙方總經濟與差距、即時事件、自己的血量/魔力
+  - **我方推薦出裝**：只從該英雄 op.gg ARAM 常出清單挑，再依敵方實際裝備的物理/魔法比例、護甲/魔抗/吸血佔比把針對裝往前排；每件都附根據（選用率、勝率、觸發條件的數字）
+  - **敵方下一件預測**：手上零件湊齊度為主，op.gg 常出裝決定順序
+  - **結算**：輸出、承受、治療、護盾、控場時間、金錢、裝備、海克斯強化，各欄最高者標示
+- `/lol 名字#tag` 不開畫面，改成查這位玩家的牌位與熟練度（Riot API）
+- 資料來源是**玩家 PC 上的 LoL 客戶端**（經 SSH 只送 GET，不會在 PC 上寫任何東西），原因見「注意事項」
+
+### 🔫 Valorant 戰績
+- `/valo 名字#tag` 查牌位、歷史最高與最近對戰
+- `/valo-track` 追蹤玩家，打完一場自動把戰績發到指定頻道
 
 ### 🩺 健康檢查
 - `scripts/healthcheck.sh` 每日診斷 service 狀態、重啟抖動、403 / 播放失敗、OOM、yt-dlp 版本、log 大小
@@ -104,6 +118,21 @@ Discord ──→ https://lyrics.你的網域 ──(Cloudflare Tunnel)──→
 
 > 開啟 Activities 後 Discord 會自動建立一個全域的 Entry Point 指令（`launch`），`bot.py` 清理全域指令時會跳過它。
 
+### 6.（選用）設定 LoL `/lol` 與 Valorant `/valo`
+`/lol` 的即時畫面跟 `/lyrics` 共用同一個 Activity，先完成步驟 5。
+
+1. **讓 bot 主機能 SSH 到玩家的 Windows PC**（免密碼金鑰登入），在 `~/.ssh/config` 設一個別名（預設叫 `pc`）。
+   bot 會在 PC 上用 `curl` 讀客戶端的 lockfile 與本機 API（LCU、`127.0.0.1:2999` Live Client Data），**只讀不寫**。
+2. `.env` 加上：
+   ```env
+   RIOT_API_KEY=...          # 選填：Riot Developer Portal 的 key，用來補牌位、熟練度、/lol 查人
+   HENRIK_API_KEY=...        # /valo 需要：HenrikDev 非官方 Valorant API 的 key
+   # LOL_SSH_HOST=pc         # 選填：~/.ssh/config 裡玩家 PC 的別名
+   # LOL_INSTALL_DIR=D:\Riot Games\League of Legends   # 選填：PC 上的 LoL 安裝路徑
+   # RIOT_PLATFORM=tw2  RIOT_REGIONAL=sea  RIOT_ACCOUNT_REGION=asia   # 選填：伺服器區域
+   ```
+3. 重啟 bot。英雄、裝備圖示與出裝統計第一次用到時才下載，快取在 `data/lol_assets/`。
+
 修改歌詞畫面前端後重新 build（不用重啟 bot，伺服器直接讀 `activity/dist/`）：
 ```bash
 cd activity && npm install && npm run build
@@ -134,6 +163,16 @@ cd activity && npm install && npm run build
 | `/info` | 顯示 Bot 連線與播放狀態。 |
 | `/come` | 把 Bot 移到你所在的語音頻道（不中斷播放）。 |
 | `/lyrics` | 在語音頻道開啟同步歌詞畫面（需先完成上方步驟 5）。 |
+
+### ⚔️ LoL / 🔫 Valorant
+| 指令 | 說明 |
+|------|------|
+| `/lol` | 在語音頻道開啟 LoL 即時對戰資訊畫面（需完成步驟 5、6）。 |
+| `/lol <名字#tag>` | 查這位玩家的牌位與英雄熟練度。 |
+| `/valo <名字#tag>` | 查 Valorant 玩家的牌位與最近戰績。 |
+| `/valo-track add <名字#tag>` | 追蹤玩家，打完一場自動把戰績發到這個頻道。 |
+| `/valo-track remove <名字#tag>` | 取消追蹤。 |
+| `/valo-track list` | 目前追蹤中的玩家。 |
 
 ### 🩺 其他
 | 指令 | 說明 |
@@ -205,11 +244,16 @@ discordbot/
 │   ├── lyrics.py           # /lyrics：歌詞伺服器、WebSocket、歌詞查詢流程
 │   ├── lyrics_sources.py   # 網易雲 / QQ 音樂 / 酷狗 歌詞來源
 │   ├── lyrics_match.py     # 歌名清理、歌手比對、LRC 解析（純函式）
+│   ├── lol.py              # /lol：輪詢玩家 PC 客戶端、op.gg 出裝、Activity 資料推送
+│   ├── lol_parse.py        # LoL 資料整理、經濟、出裝預測與推薦（純函式）
+│   ├── riot_api.py         # Riot API（牌位、熟練度、帳號查詢）
+│   ├── valo.py             # /valo、/valo-track
+│   ├── valo_parse.py       # Valorant 戰績整理（純函式）
 │   ├── health.py           # /check 健康報告
 │   ├── bigtwo.py           # 大老二
 │   └── uno.py              # UNO
-├── activity/               # 同步歌詞畫面（Discord Activity 前端）
-│   ├── src/                # 原始碼（main.js / style.css / index.html）
+├── activity/               # Discord Activity 前端（同步歌詞 + LoL 畫面）
+│   ├── src/                # 原始碼（main.js 歌詞 / lol.js LoL / style.css / index.html）
 │   └── dist/               # build 結果，bot 直接提供
 ├── scripts/
 │   └── healthcheck.sh      # 每日健檢（只診斷不修復）
@@ -218,8 +262,8 @@ discordbot/
 │   ├── uno_logic.py        # UNO 規則邏輯
 │   ├── card_image.py       # 大老二手牌圖片繪製
 │   └── uno_image.py        # UNO 手牌圖片繪製
-├── tests/                  # 單元測試（UNO、repeat、起播重試、歌詞比對）
-├── data/                   # 執行時遊戲統計、健檢報告（不納入版控）
+├── tests/                  # 單元測試（UNO、repeat、起播重試、歌詞比對、LoL/Valorant 解析）
+├── data/                   # 執行時遊戲統計、健檢報告、LoL 快取（不納入版控）
 ├── requirements.txt        # Python 依賴套件
 ├── .env.example            # 環境變數範本
 └── .env                    # Bot Token（不要上傳到 GitHub）
@@ -242,3 +286,10 @@ pytest tests/
 - 同步歌詞查不到時會顯示封面、歌名與進度條；歌詞只有逐行時間軸，所以是整行亮起，不是逐字卡拉 OK。
 - 播放 MV 影片時，若 MV 長度跟歌曲版差太多（多了前奏 / 劇情），為避免時間軸錯位會不顯示歌詞。
 - 網易雲 / QQ 音樂 / 酷狗為非官方 API，可能隨時失效；失效時會自動略過。
+- **LoL 為什麼讀 PC 客戶端而不是 Riot API**：實測台服（tw2）的公開 API 資料很殘缺，近期對局、牌位常拿不到，所以即時資料都以玩家 PC 的客戶端為準，Riot API 只用來補牌位、熟練度與查人。
+- LoL 客戶端對戰紀錄**最多只給最近 100 場**，所以近期勝率最多看 100 場；積分模式另外顯示本季完整勝敗。
+- 遊戲中查其他玩家的資料，客戶端要向伺服器拿，常要十幾到二十幾秒；查不到會每 30 秒自動重試。
+- 出裝統計來自 op.gg 的 **ARAM** 數據（沒有大混戰專屬統計），每隻英雄快取 12 小時。推薦出裝的觸發門檻（例如敵方吸血裝佔 10%）是自訂的，畫面上會附實際數字讓人自己判斷。
+- 遊戲中的 Live Client API **拿不到海克斯強化**，只有結算畫面看得到；其他玩家的金錢也拿不到，經濟是用裝備合成總價推算。
+- 名字被隱藏的玩家不會去查牌位或戰績。
+- Valorant 官方 API 不開放給 personal key，改用 [HenrikDev](https://docs.henrikdev.xyz/) 非官方 API（每分鐘 30 次）。

@@ -41,8 +41,9 @@ def player_line(p: dict, rounds: int, fbs: dict, content: dict) -> dict:
         'agent': content.get('agents', {}).get(agent.get('id', ''), {}).get('name') or agent.get('name', '?'),
         'agentId': agent.get('id', ''),
         'k': st.get('kills', 0), 'd': st.get('deaths', 0), 'a': st.get('assists', 0),
-        'acs': round((st.get('score') or 0) / rounds) if rounds else 0,
-        'adr': round(((st.get('damage') or {}).get('dealt') or 0) / rounds) if rounds else 0,
+        # 只有一回合的模式(團隊死鬥、死鬥)ACS/ADR 沒意義
+        'acs': round((st.get('score') or 0) / rounds) if rounds > 1 else None,
+        'adr': round(((st.get('damage') or {}).get('dealt') or 0) / rounds) if rounds > 1 else None,
         'hs': round((st.get('headshots') or 0) * 100 / shots) if shots else 0,
         'fb': fbs.get(p.get('puuid'), 0),
         'tier': (p.get('tier') or {}).get('id', 0),
@@ -106,7 +107,7 @@ def detail(match: dict, puuid: str, content: dict) -> dict:
     teams = []
     for t in ([] if is_ffa(match) else match.get('teams') or []):
         ps = [player_line(p, n, fbs, content) for p in match.get('players') or [] if p.get('team_id') == t.get('team_id')]
-        ps.sort(key=lambda x: -x['acs'])
+        ps.sort(key=lambda x: -(x['acs'] if x['acs'] is not None else x['k']))
         w = sum(1 for r in rounds if r.get('winning_team') == t.get('team_id'))
         trr = {'won': w, 'lost': n - w} if n > 1 and any(r.get('winning_team') for r in rounds) else (t.get('rounds') or {})
         teams.append({'id': t.get('team_id'), 'mine': t.get('team_id') == my_team, 'won': t.get('won'),
@@ -118,7 +119,8 @@ def detail(match: dict, puuid: str, content: dict) -> dict:
         teams = [{'id': 'all', 'mine': True, 'won': None, 'rounds': {}, 'mvp': None, 'players': ps}]
     if is_ffa(match):
         my_team = None
-    strip = ''.join('🟦' if r.get('winning_team') == my_team else '🟥' for r in rounds) if my_team else ''
+    strip = (''.join('🟦' if r.get('winning_team') == my_team else '🟥' for r in rounds)
+             if my_team and len(rounds) > 1 else '')
     s = summarize(match, puuid, content) if me else None
     return {'summary': s, 'teams': teams, 'strip': strip, 'me': puuid,
             'map': (s or {}).get('map') or (meta.get('map') or {}).get('name', '?'),

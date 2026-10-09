@@ -217,10 +217,10 @@ class ValoCog(commands.Cog):
             emb.add_field(name=f'最近 {len(sums)} 場（{w} 勝）', inline=False,
                           value='\n'.join(self._match_line(s) for s in sums)[:1024])
             # 平均只算有回合的對戰(死鬥的 ACS 沒意義)
-            std = [s for s in sums if not s.get('ffa')]
+            std = [s for s in sums if s.get('acs') is not None]
             if std:
                 kd = sum(s['k'] for s in std) / max(1, sum(s['d'] for s in std))
-                emb.set_footer(text=f"近 {len(std)} 場(不含死鬥)平均 ACS {sum(s['acs'] for s in std) // len(std)}・"
+                emb.set_footer(text=f"近 {len(std)} 場(不含死鬥類)平均 ACS {sum(s['acs'] for s in std) // len(std)}・"
                                     f"K/D {kd:.2f}・爆頭 {sum(s['hs'] for s in std) // len(std)}%・資料來源 HenrikDev")
             else:
                 emb.set_footer(text='資料來源 HenrikDev')
@@ -248,7 +248,7 @@ class ValoCog(commands.Cog):
             for p in t['players'][:12]:
                 me = '▶ ' if p['puuid'] == d['me'] else ''
                 star = '⭐' if p['puuid'] == t['mvp'] else ''
-                stats = (f"爆頭 {p['hs']}%" if t['id'] == 'all'
+                stats = (f"爆頭 {p['hs']}%" if p['acs'] is None
                          else f"ACS {p['acs']}・ADR {p['adr']}・爆頭 {p['hs']}%・首殺 {p['fb']}")
                 lines.append(f"{me}**{_esc(p['agent'])}** {_esc(p['name'])}{star}　{p['k']}/{p['d']}/{p['a']}　{stats}")
             emb.add_field(name=head, value='\n'.join(lines)[:1024] or '—', inline=False)
@@ -387,22 +387,29 @@ class ValoCog(commands.Cog):
         t = self.tracked.get(puuid)
         if not t:
             return
-        ms = await self.api.matches(t['region'], t['name'], t['tag'], 1, background=True, ttl=30)
+        # size=1 實測會拿到舊資料(2026-10-09：最新一場只出現在 size≥3)→ 抓 3 場自己比
+        ms = await self.api.matches(t['region'], t['name'], t['tag'], 3, background=True, ttl=30)
         if not ms:
             return
-        m = ms[0]
-        mid = (m.get('metadata') or {}).get('match_id')
-        if not mid or mid == t.get('last'):
+        done = [m for m in ms if (m.get('metadata') or {}).get('is_completed', True)
+                and (m.get('metadata') or {}).get('match_id')]
+        done.sort(key=lambda m: (m.get('metadata') or {}).get('started_at') or '')
+        ids = [m['metadata']['match_id'] for m in done]
+        if not ids or ids[-1] == t.get('last'):
             return
-        if not (m.get('metadata') or {}).get('is_completed', True):
-            return
-        t['last'] = mid
+        # 上次記的那場之後的都是新的；記的那場不在這 3 場裡(很久沒查或第一次)就只發最新一場
+        new = done[ids.index(t['last']) + 1:] if t.get('last') in ids else done[-1:]
+        t['last'] = ids[-1]
         # 改過名 → 用對戰裡的新名字
-        me = next((p for p in m.get('players') or [] if p.get('puuid') == puuid), None)
+        me = next((p for p in done[-1].get('players') or [] if p.get('puuid') == puuid), None)
         if me:
             t['name'], t['tag'] = me.get('name', t['name']), me.get('tag', t['tag'])
         self._save_tracked()
-        self.api.remember_match(t['region'], m)
+        for m in new:
+            self.api.remember_match(t['region'], m)
+            await self._post_match(t, puuid, m)
+
+    async def _post_match(self, t: dict, puuid: str, m: dict):
         s = summarize(m, puuid, self.content)
         ch = self.bot.get_channel(t['channel'])
         if not s or not ch:
@@ -417,8 +424,8 @@ class ValoCog(commands.Cog):
         icon = (self.content['agents'].get(s['agentId']) or {}).get('icon')
         if icon:
             emb.set_thumbnail(url=icon)
-        mmr = await self.api.mmr(t['region'], t['name'], t['tag'], background=True)
-        if mmr and s['queue'] == '競技':
+        mmr = await self.api.mmr(t['region'], t['name'], t['tag'], background=True) if s['queue'] == '競技' else None
+        if mmr:
             ms_ = mmr_summary(mmr, self.content)
             ch_ = ms_['lastChange']
             emb.add_field(name='牌位', value=f"{_esc(ms_['current']['name'])} {ms_['rr']} RR"

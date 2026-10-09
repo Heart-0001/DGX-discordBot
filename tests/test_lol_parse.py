@@ -134,3 +134,19 @@ def test_valo_summary_team_and_deathmatch():
     assert s['ffa'] and s['score'] == '第 3 名' and s['acs'] is None and not s['won']
     d = detail(dm, 'me', content)
     assert d['strip'] == '' and len(d['teams']) == 1 and d['teams'][0]['players'][0]['k'] == 40
+
+
+def test_valo_single_round_mode_has_no_acs():
+    from cogs.valo_parse import detail, summarize
+    pl = lambda pu, team, k: {'puuid': pu, 'name': pu, 'tag': 't', 'team_id': team, 'agent': {'id': 'a'},
+                              'stats': {'kills': k, 'deaths': 1, 'assists': 0, 'score': 5000, 'headshots': 1,
+                                        'bodyshots': 1, 'legshots': 0, 'damage': {'dealt': 3000}}}
+    tdm = {'metadata': {'match_id': 'm', 'queue': {'id': 'hurm', 'mode_type': 'TeamDeathmatch'}, 'map': {}},
+           'players': [pl('me', 'Blue', 14), pl('x', 'Red', 30)],
+           'teams': [{'team_id': 'Blue', 'won': False, 'rounds': {'won': 95, 'lost': 100}},
+                     {'team_id': 'Red', 'won': True, 'rounds': {'won': 100, 'lost': 95}}],
+           'rounds': [{'winning_team': 'Red'}]}
+    s = summarize(tdm, 'me', {})
+    assert s['acs'] is None and s['adr'] is None and s['score'] == '95:100' and s['won'] is False
+    d = detail(tdm, 'me', {})
+    assert d['strip'] == '' and d['teams'][0]['rounds'] == {'won': 95, 'lost': 100}

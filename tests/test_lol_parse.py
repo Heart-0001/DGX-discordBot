@@ -150,3 +150,120 @@ def test_valo_single_round_mode_has_no_acs():
     assert s['acs'] is None and s['adr'] is None and s['score'] == '95:100' and s['won'] is False
     d = detail(tdm, 'me', {})
     assert d['strip'] == '' and d['teams'][0]['rounds'] == {'won': 95, 'lost': 100}
+
+
+ITEMS = {
+    '1036': {'name': '長劍', 'total': 350, 'buy': True, 'from': [], 'into': ['3134', '3071'], 'tags': ['Damage'], 'maps': ['11', '12'], 'special': False},
+    '1028': {'name': '紅水晶', 'total': 400, 'buy': True, 'from': [], 'into': ['3071'], 'tags': ['Health'], 'maps': ['11', '12'], 'special': False},
+    '3134': {'name': '殘暴之力', 'total': 1100, 'buy': True, 'from': ['1036', '1036'], 'into': ['3142'], 'tags': ['Damage'], 'maps': ['11', '12'], 'special': False},
+    '3142': {'name': '妖夢鬼刀', 'total': 2800, 'buy': True, 'from': ['3134', '1036'], 'into': [], 'tags': ['Damage', 'ArmorPenetration'], 'maps': ['11', '12'], 'special': False},
+    '3071': {'name': '黑色切割者', 'total': 3000, 'buy': True, 'from': ['1036', '1028'], 'into': [], 'tags': ['Damage', 'Health'], 'maps': ['11', '12'], 'special': False},
+    '773142': {'name': '妖夢鬼刀', 'total': 2800, 'buy': True, 'from': ['3134'], 'into': [], 'tags': ['Damage'], 'maps': ['12'], 'special': False},
+}
+
+
+def test_predict_next_prefers_most_complete():
+    from cogs.lol_parse import item_value, predict_next
+    static = {'items': ITEMS, 'champInfo': {'238': {'tags': ['Assassin'], 'ad': 9, 'ap': 1, 'tank': 2}}}
+    # 殘暴之力 + 長劍 → 妖夢鬼刀已經湊齊 1450/2800；黑色切割者只有長劍
+    got = predict_next(238, [3134, 1036], static, 12)
+    assert got[0]['id'] == 3142 and got[0]['left'] == 1350 and got[1]['id'] == 3071
+    assert all(x['id'] < 10000 for x in got)            # 其他模式的複製品不算
+    assert predict_next(238, [3142], static, 12) == []   # 只有大裝、沒零件 → 不猜
+    assert item_value({'itemID': 1036, 'count': 2}, ITEMS) == 700
+    assert item_value({'itemID': 9999, 'price': 50}, ITEMS) == 50
+
+
+OPGG_TEXT = ('class LolGetChampionAnalysis: data\nclass Data: core_items,boots,last_items,fourth_items,fifth_items,counters_meta\n'
+             'class CoreItems: ids,play,win,pick_rate\n\n'
+             'LolGetChampionAnalysis(Data(CoreItems([3134,123071],692,351,0.11),Boots([3158],4365,0.68),'
+             '[CoreItems([3071],429,237,0.19)],[CoreItems([3142],1160,590,0.23)],[CoreItems([3071],227,127,0.1)],'
+             'CountersMeta("x")))')
+
+
+def test_opgg_build_and_popular_prediction():
+    from cogs.lol_parse import parse_opgg_build, predict_next
+    b = parse_opgg_build(OPGG_TEXT)
+    assert b['core'] == ['3134', '3071']             # 123071 → 3071
+    assert b['pop']['3071'] > b['pop']['3142'] > 0   # 核心裝 > 第 4 件
+    static = {'items': ITEMS, 'champInfo': {}}
+    # 手上什麼都沒有也能猜(照常出裝)；黑色切割者是核心裝
+    got = predict_next(238, [], static, 12, build=b)
+    assert got[0]['id'] == 3071 and got[0]['popular']
+    assert parse_opgg_build('error') is None
+
+
+def test_recent_games_newest_first_and_remake():
+    from cogs.lol_parse import recent_games
+    g = lambda t, win, dur, q=2400: {'gameCreation': t * 1000, 'gameDuration': dur, 'queueId': q, 'gameMode': 'KIWI',
+                                      'participants': [{'championId': 86, 'stats': {'win': win, 'kills': 1, 'deaths': 2, 'assists': 3}}]}
+    out = recent_games([g(100, True, 900), g(300, False, 200, 420)] + [g(i, True, 900) for i in range(20)])
+    assert len(out) == 10
+    assert out[0]['t'] == 300 and out[0]['remake'] and out[0]['q'] == '單雙'
+    assert out[1]['t'] == 100 and out[1]['w'] and out[1]['q'] == '大混戰'
+
+
+def test_live_puuid_falls_back_to_session_champion():
+    from cogs.lol_parse import session_champ_puuids
+    sess = {'gameData': {'teamOne': [{'puuid': 'pu-garen', 'championId': 86}],
+                         'teamTwo': [{'championId': 72}]}}   # 被隱藏的人沒有 puuid
+    m = session_champ_puuids(sess)
+    assert m == {'ORDER:86': 'pu-garen'}
+    d = {'activePlayer': {'riotId': 'Me#1'},
+         'allPlayers': [_player('Foe', '2', 'ORDER', 'Garen', '蓋倫'), _player('Me', '1', 'CHAOS', 'Skarner', '史加納')],
+         'events': {'Events': []}, 'gameData': {'gameTime': 1}}
+    live = parse_live(d, STATIC, {}, None, m)
+    by = {p['champ']['key']: p['puuid'] for p in live['players']}
+    assert by == {'Garen': 'pu-garen', 'Skarner': None}
+
+
+def test_parts_in_hand_beat_popular_core():
+    # 手上已有 A 的兩個零件，常出核心裝是 B(一個零件都沒有) → 應該猜 A
+    from cogs.lol_parse import predict_next
+    items = dict(ITEMS)
+    items['9001'] = {'name': '火炮', 'total': 2650, 'buy': True, 'from': ['9002'], 'into': [], 'tags': ['Damage'],
+                     'maps': ['12'], 'special': False}
+    items['9002'] = {'name': '雙刀', 'total': 1000, 'buy': True, 'from': [], 'into': ['9001'], 'tags': [], 'maps': ['12'], 'special': False}
+    build = {'core': ['9001'], 'pop': {'9001': 1.3, '3071': 0.2}}
+    got = predict_next(1, [1036, 1028], {'items': items}, 12, build=build)
+    assert got[0]['id'] == 3071 and got[1]['id'] == 9001
+
+
+def test_eog_extra_fields_and_enrich_from_history():
+    from cogs.lol_parse import enrich_eog, eog_missing, parse_eog
+    d = {'gameId': 1, 'gameLength': 900, 'teams': [{'isPlayerTeam': True, 'isWinningTeam': True, 'players': [
+        {'puuid': 'pu-a', 'championId': 86, 'isLocalPlayer': True,
+         'stats': {'TOTAL_DAMAGE_DEALT_TO_CHAMPIONS': 100, 'TOTAL_DAMAGE_SHIELDED_ON_TEAMMATES': 30}},
+        {'puuid': 'pu-b', 'championId': 72, 'stats': {}}]}]}
+    e = parse_eog(d, STATIC)
+    a, b = e['teams'][0]['players']
+    assert a['dmg'] == 100 and a['shield'] == 30 and a['cc'] is None and eog_missing(e)
+    game = {'participantIdentities': [{'participantId': 1, 'player': {'puuid': 'pu-a'}}],
+            'participants': [{'participantId': 1, 'championId': 86, 'stats': {'timeCCingOthers': 12, 'totalDamageDealtToChampions': 999}},
+                             {'participantId': 2, 'championId': 72, 'stats': {'timeCCingOthers': 5}}]}
+    enrich_eog(e, game)
+    assert a['cc'] == 12 and a['dmg'] == 100      # 已有的不蓋掉
+    assert b['cc'] == 5                           # puuid 對不到 → 用英雄對
+
+
+def test_recommend_only_from_build_and_explains_counters():
+    from cogs.lol_parse import enemy_profile, recommend
+    items = dict(ITEMS)
+    items['3075'] = {'name': '荊棘之甲', 'total': 2450, 'buy': True, 'from': ['1028'], 'into': [], 'tags': ['Armor', 'Health'],
+                     'maps': ['12'], 'special': False, 'gw': True}
+    items['6673'] = {'name': '吸血刀', 'total': 3000, 'buy': True, 'from': ['1036'], 'into': [], 'tags': ['Damage', 'LifeSteal'],
+                     'maps': ['12'], 'special': False}
+    static = {'items': items, 'champInfo': {}}
+    # 敵方：兩件吸血刀 + 一件黑切
+    raw = [{'championName': '某A', 'items': [{'itemID': 6673}, {'itemID': 6673}]},
+           {'championName': '某B', 'items': [{'itemID': 3071}]}]
+    prof = enemy_profile(raw, [1, 2], static)
+    assert prof['src'] == '依敵方裝備' and prof['phys'] == 100 and prof['healPct'] == 67
+    build = {'pop': {'3075': .3, '3142': 1.0}, 'stats': {
+        '3075': {'slot': '第 5 件', 'rate': .2, 'play': 100, 'wr': .55},
+        '3142': {'slot': '核心裝第 1 件', 'rate': .1, 'play': 100, 'wr': .5}}}
+    got = recommend(54, [], build, prof, static, 12)
+    assert [r['id'] for r in got] == [3075, 3142]            # 荊棘：常出 + 物理 100% + 重創 → 排第一
+    assert got[0]['counter'] and any('重創' in x for x in got[0]['reasons']) and any('護甲' in x for x in got[0]['reasons'])
+    assert all(r['id'] != 3071 for r in got)                 # 不在常出清單的不推薦
+    assert recommend(54, [], None, prof, static, 12) == []   # 沒有 op.gg 資料就不推薦(不瞎掰)

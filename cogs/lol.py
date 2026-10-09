@@ -25,14 +25,23 @@ from discord import app_commands
 from discord.ext import commands
 
 from cogs.riot_api import RiotApi, league_to_ranks
-from cogs.lol_parse import (EOG_PHASES, INGAME_PHASES, parse_champselect, parse_eog, parse_live,
-                            parse_profile, queue_name, riot_id, session_puuids)
+from cogs.lol_parse import (BUILD_SLOTS, EOG_PHASES, eog_missing, enrich_eog, INGAME_PHASES, parse_champselect, parse_eog, parse_live,
+                            parse_opgg_build, parse_profile, queue_name, riot_id, session_champ_puuids,
+                            session_puuids)
 
 log = logging.getLogger(__name__)
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ASSET_DIR = os.path.join(ROOT, 'data', 'lol_assets')
 LAST_FILE = os.path.join(ROOT, 'data', 'lol_last.json')
+RAW_FILE = os.path.join(ROOT, 'data', 'lol_live_raw.json')
+EOG_RAW_FILE = os.path.join(ROOT, 'data', 'lol_eog_raw.json')   # 最近一場結算原始 JSON(查欄位用)
+BUILDS_FILE = os.path.join(ASSET_DIR, 'builds.json')
+
+# 英雄常出裝：op.gg 公開的 MCP 端點(ARAM 統計；大混戰沒有單獨資料，出裝幾乎一樣)
+OPGG_MCP = 'https://mcp-api.op.gg/mcp'
+BUILD_TTL = 12 * 3600
+BUILD_RETRY = 600
 
 SSH_HOST = os.getenv('LOL_SSH_HOST', 'pc')
 LOL_DIR = os.getenv('LOL_INSTALL_DIR', r'D:\Riot Games\League of Legends')
@@ -41,7 +50,7 @@ POLL_IDLE = 5        # 秒：沒在遊戲時看 gameflow 的間隔
 POLL_ACTIVE = 2      # 秒：選角 / 遊戲中
 POLL_OFFLINE = 15    # 秒：PC 連不上或客戶端沒開
 PROFILE_TTL = 600    # 秒：玩家資料快取
-HISTORY_COUNT = 20   # 近期勝率看幾場
+HISTORY_COUNT = 100  # 近期勝率看幾場(客戶端最多只給最近 100 場，分頁參數無效)
 
 DDRAGON = 'https://ddragon.leagueoflegends.com'
 CDRAGON = 'https://raw.communitydragon.org/latest'
@@ -145,12 +154,23 @@ class Static:
         champs = (await self._get_json(f'{DDRAGON}/cdn/{ver}/data/zh_TW/champion.json'))['data']
         spells = (await self._get_json(f'{DDRAGON}/cdn/{ver}/data/zh_TW/summoner.json'))['data']
         augs = await self._get_json(f'{CD_GAME_DATA}/zh_tw/v1/cherry-augments.json')
+        items = (await self._get_json(f'{DDRAGON}/cdn/{ver}/data/zh_TW/item.json'))['data']
         d = {
             'champIdToKey': {c['key']: c['id'] for c in champs.values()},
             'champKeyToId': {c['id'].lower(): int(c['key']) for c in champs.values()},
             'champNames': {c['key']: c['name'] for c in champs.values()},
             'spellKeys': {s['id']: s['name'] for s in spells.values()},
             'spellIdToKey': {s['key']: s['id'] for s in spells.values()},
+            # 預測下一件大裝備用：英雄類型/攻擊魔法坦度、裝備合成表與價錢
+            'champInfo': {c['key']: {'tags': c.get('tags', []), 'ad': c['info']['attack'],
+                                     'ap': c['info']['magic'], 'tank': c['info']['defense']} for c in champs.values()},
+            'items': {k: {'name': v['name'], 'total': v['gold']['total'], 'buy': v['gold']['purchasable'],
+                          'from': v.get('from', []), 'into': v.get('into', []), 'tags': v.get('tags', []),
+                          'maps': [m for m, ok in v.get('maps', {}).items() if ok],
+                          'gw': '重創' in v.get('description', ''),   # 重創(減治療)效果
+                          'special': bool(v.get('requiredChampion') or v.get('requiredAlly')
+                                          or v.get('inStore') is False or v.get('consumed'))}
+                      for k, v in items.items()},
             'augments': {str(a['id']): {'name': a.get('nameTRA', ''), 'rarity': a.get('rarity', ''),
                                         'icon': a.get('augmentSmallIconPath', '')} for a in augs},
         }
@@ -159,7 +179,7 @@ class Static:
         with open(path + '.tmp', 'w', encoding='utf-8') as f:
             json.dump({'version': ver, 'data': d}, f, ensure_ascii=False)
         os.replace(path + '.tmp', path)
-        log.info(f'🎮 LoL 靜態資料 {ver}：{len(champs)} 隻英雄、{len(augs)} 個增幅')
+        log.info(f'🎮 LoL 靜態資料 {ver}：{len(champs)} 隻英雄、{len(items)} 件裝備、{len(augs)} 個增幅')
 
     def public(self) -> dict:
         d = self.data
@@ -225,11 +245,7 @@ class Static:
 
     async def prefetch(self):
         """先把英雄、召喚師技能、裝備圖示抓下來(第一次開畫面就不用等)。"""
-        try:
-            items = (await self._get_json(f'{DDRAGON}/cdn/{self.version}/data/zh_TW/item.json'))['data']
-        except Exception as e:
-            log.warning(f'🎮 裝備清單下載失敗: {e!r}')
-            items = {}
+        items = self.data.get('items') or {}
         jobs = ([('champ', k) for k in self.data['champIdToKey']] +
                 [('spell', k) for k in self.data['spellIdToKey']] +
                 [('item', k) for k in items] +
@@ -260,12 +276,18 @@ class LolCog(commands.Cog):
                             'champselect': None, 'live': None, 'eog': None, 'profiles': {}}
         self._profiles: dict[str, tuple[float, dict]] = {}
         self._profile_jobs: dict[str, asyncio.Task] = {}
+        self._profile_sem = asyncio.Semaphore(4)       # 同時查幾個人(太多客戶端會塞住)
         self._name_to_puuid: dict[str, str] = {}
         self.api: Optional[RiotApi] = None
         self._api_puuid: dict[str, str] = {}            # LCU puuid → API puuid
         self._mastery: dict[tuple[str, int], tuple[float, Optional[dict]]] = {}
         self._mastery_jobs: dict[tuple[str, int], asyncio.Task] = {}
+        self._enrich_tries: dict[int, int] = {}          # gameId → 結算補資料試過幾次
+        self._builds: dict[str, dict] = {}              # 英雄 id → {'at', 'build'}
+        self._build_jobs: dict[str, asyncio.Task] = {}
+        self._build_sem = asyncio.Semaphore(3)
         self._load_last()
+        self._load_builds()
 
     # ── lifecycle ──
     async def cog_load(self):
@@ -280,7 +302,8 @@ class LolCog(commands.Cog):
         self._task = asyncio.ensure_future(self._loop())
 
     async def cog_unload(self):
-        for t in (self._task, self._prefetch, *self._profile_jobs.values(), *self._mastery_jobs.values()):
+        for t in (self._task, self._prefetch, *self._profile_jobs.values(), *self._mastery_jobs.values(),
+                  *self._build_jobs.values()):
             if t:
                 t.cancel()
         if self._http:
@@ -300,6 +323,100 @@ class LolCog(commands.Cog):
             os.replace(LAST_FILE + '.tmp', LAST_FILE)
         except OSError as e:
             log.warning(f'🎮 結算存檔失敗: {e!r}')
+
+    # ── 英雄常出裝(op.gg) ──
+    def _load_builds(self):
+        try:
+            with open(BUILDS_FILE, encoding='utf-8') as f:
+                self._builds = json.load(f)
+        except (OSError, ValueError):
+            pass
+
+    def _save_builds(self):
+        try:
+            os.makedirs(ASSET_DIR, exist_ok=True)
+            with open(BUILDS_FILE + '.tmp', 'w', encoding='utf-8') as f:
+                json.dump(self._builds, f, ensure_ascii=False)
+            os.replace(BUILDS_FILE + '.tmp', BUILDS_FILE)
+        except OSError as e:
+            log.warning(f'🎮 出裝快取存檔失敗: {e!r}')
+
+    def _want_builds(self, champ_ids: list[int]):
+        now = time.time()
+        for cid in champ_ids:
+            cid = str(cid or '')
+            if not cid or cid == '0' or cid in self._build_jobs:
+                continue
+            hit = self._builds.get(cid)
+            if hit and now - hit['at'] < (BUILD_TTL if hit.get('build') else BUILD_RETRY):
+                continue
+            self._build_jobs[cid] = asyncio.ensure_future(self._fetch_build(cid))
+
+    async def _fetch_build(self, cid: str):
+        try:
+            key = self.static.data['champIdToKey'].get(cid)
+            if not key:
+                return
+            body = {'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call', 'params': {
+                'name': 'lol_get_champion_analysis',
+                'arguments': {'game_mode': 'aram', 'champion': key.upper(), 'position': 'mid',
+                              'desired_output_fields': [f'data.{f}' + ('.' if f == 'core_items' else '[].')
+                                                        + '{ids[],pick_rate,play,win}' for f in BUILD_SLOTS]}}}
+            build = None
+            async with self._build_sem:
+                async with self._http.post(OPGG_MCP, json=body, timeout=aiohttp.ClientTimeout(total=30),
+                                           headers={'Accept': 'application/json, text/event-stream'}) as r:
+                    txt = await r.text()
+            if r.status == 200:
+                d = json.loads(txt[txt.find('{'):])
+                content = ((d.get('result') or {}).get('content') or [{}])[0].get('text', '')
+                build = parse_opgg_build(content)
+            if not build:
+                log.warning(f'🎮 op.gg 出裝拿不到 {key}: HTTP {r.status} {txt[:120]!r}')
+            self._builds[cid] = {'at': time.time(), 'build': build}
+            self._save_builds()
+        except Exception as e:
+            log.warning(f'🎮 op.gg 出裝失敗 {cid}: {e!r}')
+            self._builds[cid] = {'at': time.time(), 'build': None}
+        finally:
+            self._build_jobs.pop(cid, None)
+
+    def builds(self) -> dict:
+        return {k: v['build'] for k, v in self._builds.items() if v.get('build')}
+
+    async def _enrich_eog(self, eog: dict):
+        """結算資料缺的戰鬥數據從對戰紀錄詳情補；剛結束時詳情可能還沒好，下一輪再試。"""
+        gid = eog.get('gameId')
+        if not gid:
+            return
+        tries = self._enrich_tries.get(gid, 0)
+        if tries >= 10:
+            return
+        self._enrich_tries[gid] = tries + 1
+        game = await self.pc.lcu(f"/lol-match-history/v1/games/{int(eog['gameId'])}", timeout=20)
+        if isinstance(game, dict) and game.get('participants'):
+            enrich_eog(eog, game)
+
+    def _dump_json(self, path: str, d: dict):
+        try:
+            with open(path + '.tmp', 'w', encoding='utf-8') as f:
+                json.dump(d, f, ensure_ascii=False)
+            os.replace(path + '.tmp', path)
+        except OSError as e:
+            log.warning(f'🎮 存檔失敗 {path}: {e!r}')
+
+    def _dump_raw(self, d: dict):
+        """每 60 秒把遊戲中的原始 JSON 存一份(data/ 不進 git)，拿來查 API 有哪些欄位(例如海克斯)。"""
+        now = time.time()
+        if now - getattr(self, '_raw_at', 0) < 60:
+            return
+        self._raw_at = now
+        try:
+            with open(RAW_FILE + '.tmp', 'w', encoding='utf-8') as f:
+                json.dump(d, f, ensure_ascii=False)
+            os.replace(RAW_FILE + '.tmp', RAW_FILE)
+        except OSError as e:
+            log.warning(f'🎮 原始資料存檔失敗: {e!r}')
 
     def _set(self, **kw):
         changed = False
@@ -329,12 +446,13 @@ class LolCog(commands.Cog):
         try:
             if not re.match(r'^[0-9a-f\-]{36,}$', puuid):
                 return
-            # 別人的對戰紀錄第一次查客戶端要向伺服器拿，常要好幾秒 → 給長一點
-            summ, ranked, hist = await asyncio.gather(
-                self.pc.lcu(f'/lol-summoner/v2/summoners/puuid/{puuid}'),
-                self.pc.lcu(f'/lol-ranked/v1/ranked-stats/{puuid}'),
-                self.pc.lcu(f'/lol-match-history/v1/products/lol/{puuid}/matches'
-                            f'?begIndex=0&endIndex={HISTORY_COUNT - 1}', timeout=25))
+            # 別人的資料客戶端要向伺服器拿：遊戲中召喚師資料實測 ~14 秒、對戰紀錄 ~22 秒 → 給長一點
+            async with self._profile_sem:
+                summ, ranked, hist = await asyncio.gather(
+                    self.pc.lcu(f'/lol-summoner/v2/summoners/puuid/{puuid}', timeout=30),
+                    self.pc.lcu(f'/lol-ranked/v1/ranked-stats/{puuid}'),
+                    self.pc.lcu(f'/lol-match-history/v1/products/lol/{puuid}/matches'
+                                f'?begIndex=0&endIndex={HISTORY_COUNT - 1}', timeout=45))
             prof = parse_profile(summ, ranked, hist, queue_id)
             prof['_q'] = queue_id
             prof['rankSrc'] = 'client'
@@ -348,8 +466,23 @@ class LolCog(commands.Cog):
                         if r:
                             prof[slot] = r
                     prof['rankSrc'] = 'api'
-            # 對戰紀錄沒拿到 → 快取時間設短，下一輪重試
-            self._profiles[puuid] = (time.time() - (PROFILE_TTL - 30 if hist is None else 0), prof)
+            # 對戰紀錄沒拿到(別人的第一次查常要 20 秒以上，會逾時) → 快取時間設短，30 秒後重試
+            # 客戶端還在下載時會回「成功但 0 場」，也當失敗；真的 0 場的新帳號只是每 30 秒多查一次
+            no_hist = not ((hist or {}).get('games') or {}).get('games') if isinstance(hist, dict) else True
+            no_name = not prof['name']   # 召喚師資料逾時 → 沒名字就對不到遊戲中的人
+            # 重試拿到的比上次少 → 沿用上次拿到的那部分，不要蓋成空的
+            prev = (self._profiles.get(puuid) or (0, {}))[1]
+            if no_hist and prev.get('games'):
+                prof.update({k: prev[k] for k in ('recent', 'recentAll', 'games', 'private') if k in prev})
+                no_hist = False
+            if no_name and prev.get('name'):
+                prof.update({k: prev[k] for k in ('name', 'tag', 'level', 'icon') if k in prev})
+                no_name = False
+            failed = no_hist or no_name
+            if failed:
+                log.info(f'🎮 玩家資料不完整(戰績{"✗" if no_hist else "✓"} 名字{"✗" if no_name else "✓"})，'
+                         f'30 秒後重試 {puuid[:8]}')
+            self._profiles[puuid] = (time.time() - (PROFILE_TTL - 30 if failed else 0), prof)
             if prof['name']:
                 self._name_to_puuid[riot_id(prof['name'], prof['tag']).lower()] = puuid
             self._publish_profiles()
@@ -436,6 +569,14 @@ class LolCog(commands.Cog):
             self.state['_raw_phase'] = None
             return POLL_OFFLINE
         self.state['_raw_phase'] = phase
+        eog = self.state.get('eog')
+        if eog and eog_missing(eog) and phase not in EOG_PHASES:
+            # 上一場結算缺戰鬥數據(舊版存的、或剛結束時詳情還沒好) → 客戶端開著時補，最多試 10 次
+            await self._enrich_eog(eog)
+            if not eog_missing(eog):
+                self._save_last(eog)
+                self.state['eog'] = None   # 原地改的 → 先清掉再 _set，才會推給畫面
+                self._set(eog=eog)
 
         if phase != last_phase:
             sess = await self.pc.lcu('/lol-gameflow/v1/session') or {}
@@ -444,6 +585,7 @@ class LolCog(commands.Cog):
             self._set(queue={'id': qid, 'name': queue_name(qid, q.get('description', ''))} if qid else None)
             if phase in INGAME_PHASES:
                 self.state['_session_puuids'] = session_puuids(sess)
+                self.state['_session_champs'] = session_champ_puuids(sess)
                 self._want_profiles(self.state['_session_puuids'], qid)
             if self.state.get('me') is None:
                 me = await self.pc.lcu('/lol-summoner/v1/current-summoner') or {}
@@ -457,13 +599,19 @@ class LolCog(commands.Cog):
                 self._set(phase='champselect', sub='選角中', champselect=cs, live=None)
                 self._want_profiles([p['puuid'] for p in cs['team']], qid)
                 self._want_mastery([(p['puuid'], p['championId']) for p in cs['team']])
+                self._want_builds([p['championId'] for p in cs['team']])
                 self._publish_profiles()
             return POLL_ACTIVE
 
         if phase in INGAME_PHASES:
+            # 每輪都檢查一次：之前逾時的玩家資料到期就會重抓(有快取的不會重複查)
+            self._want_profiles(self.state.get('_session_puuids') or [], qid)
             d = await self.pc.live()
             if isinstance(d, dict) and d.get('allPlayers'):
-                live = parse_live(d, self.static.data, self._name_to_puuid)
+                self._dump_raw(d)
+                live = parse_live(d, self.static.data, self._name_to_puuid, self.builds(),
+                                  self.state.get('_session_champs'))
+                self._want_builds([p['champ']['id'] for p in live['players']])
                 self._set(phase='ingame', sub='遊戲中', live=live, champselect=None)
                 self._want_mastery([(p['puuid'], p['champ']['id']) for p in live['players']])
             else:
@@ -477,7 +625,14 @@ class LolCog(commands.Cog):
             if isinstance(raw, dict) and raw.get('teams'):
                 eog = parse_eog(raw, self.static.data)
                 eog['queue'] = self.state.get('queue')
-                if (self.state.get('eog') or {}).get('gameId') != eog['gameId']:
+                old = self.state.get('eog') or {}
+                if old.get('gameId') == eog['gameId'] and not eog_missing(old):
+                    eog = old   # 已經補過了，不再查
+                elif eog_missing(eog):
+                    await self._enrich_eog(eog)
+                if old.get('gameId') != eog['gameId'] or old != eog:
+                    if old.get('gameId') != eog['gameId']:
+                        self._dump_json(EOG_RAW_FILE, raw)
                     self._save_last(eog)
                 self._set(phase='eog', sub='結算', eog=eog, live=None, champselect=None)
             return POLL_ACTIVE
@@ -487,6 +642,7 @@ class LolCog(commands.Cog):
                'None': '待機中'}.get(phase, phase)
         self._set(phase='eog' if self.state.get('eog') else 'idle', sub=sub, live=None, champselect=None)
         self.state.pop('_session_puuids', None)
+        self.state.pop('_session_champs', None)
         return POLL_ACTIVE if phase in ('Matchmaking', 'ReadyCheck') else POLL_IDLE
 
     def public_state(self) -> dict:

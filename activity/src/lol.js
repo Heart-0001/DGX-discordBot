@@ -7,7 +7,6 @@ const TIERS = {
 };
 const APEX = new Set(['MASTER', 'GRANDMASTER', 'CHALLENGER']);   // 這幾階沒有分級
 const ITEM_SLOTS = 7;
-const EVENT_MAX = 15;
 
 let root = null;
 let ws = null;
@@ -27,6 +26,7 @@ const mmss = (s) => {
   s = Math.max(0, Math.floor(s || 0));
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
 };
+const kGold = (n) => `${((Number(n) || 0) / 1000).toFixed(1)}k`;
 const shortQueue = (name) => (name || '').split('：').pop();
 
 // 圖片：壞掉過的直接畫 fallback 文字；第一次 404 由 root 上的 error 監聽處理
@@ -58,7 +58,9 @@ function rankHtml(prof, compact = false) {
   if (!r || !r.tier) return '<span class="rank unranked">未排名</span>';
   const tier = r.tier.toUpperCase();
   const label = `${TIERS[tier] || tier}${APEX.has(tier) ? '' : ` ${r.division || ''}`}`;
-  const lp = compact ? '' : ` <small>${num(r.lp)} LP${prof.solo ? '' : ' · 彈性'}</small>`;
+  // 牌位的勝敗是整季完整場數(不是近期)
+  const season = r.w + r.l ? ` · 本季 ${r.w}勝${r.l}敗 ${Math.round((r.w / (r.w + r.l)) * 100)}%` : '';
+  const lp = compact ? '' : ` <small>${num(r.lp)} LP${prof.solo ? '' : ' · 彈性'}${season}</small>`;
   return `<span class="rank t-${tier.toLowerCase()}">${img(`lol/img/tier/${tier.toLowerCase()}.svg`, 'crest', label, '')}<b>${esc(label)}</b>${lp}</span>`;
 }
 
@@ -103,7 +105,33 @@ function header(center = '', right = '') {
     <div class="lt-mid">${center}</div><div class="lt-right">${right}${badge(state.sub)}</div></header>`;
 }
 
-function playerCard(p, prof, champId) {
+// 幾分鐘/小時/天前
+const ago = (sec) => {
+  const m = Math.max(0, (Date.now() / 1000 - sec) / 60);
+  if (m < 60) return `${Math.round(m)}分前`;
+  if (m < 60 * 24) return `${Math.round(m / 60)}小時前`;
+  return `${Math.round(m / 1440)}天前`;
+};
+
+// 選角卡片：最近 10 場(客戶端對戰紀錄)
+function gamesHtml(prof) {
+  if (!prof) return '<div class="pc-games"><span class="skel wide"></span></div>';
+  const gs = prof.games || [];
+  if (prof.private || !gs.length) return '';
+  const rows = gs.map((g) => {
+    const res = g.remake ? 'rm' : g.w ? 'w' : 'l';
+    const kd = g.d ? ((g.k + g.a) / g.d).toFixed(1) : 'P';
+    return `<li class="g ${res}" title="${esc(`${g.q} · ${mmss(g.dur)} · KDA ${kd}`)}">
+      ${champImg(g.c, 'champ xs', staticData.champions[g.c] || '')}
+      <span class="g-r">${g.remake ? '重開' : g.w ? '勝' : '敗'}</span>
+      <span class="g-kda">${g.k}/<b>${g.d}</b>/${g.a}</span>
+      <span class="g-q">${esc(g.q)}</span><span class="g-t">${ago(g.t)}</span></li>`;
+  }).join('');
+  const w = gs.filter((g) => !g.remake && g.w).length, l = gs.filter((g) => !g.remake && !g.w).length;
+  return `<div class="pc-games"><div class="pg-h">近 ${gs.length} 場 <b class="gw">${w}勝</b> <b class="gl">${l}敗</b></div><ul>${rows}</ul></div>`;
+}
+
+function playerCard(p, prof, champId, withGames = false) {
   const qn = state.queue?.name;
   const pic = champId !== undefined
     ? champImg(champId, 'champ big', staticData.champions[champId] || '')
@@ -118,6 +146,7 @@ function playerCard(p, prof, champId) {
       <div class="pc-mas">${masteryHtml(prof, champId)}</div>
       <div class="pc-rank">${p.hidden || !p.puuid ? '<span class="dim">—</span>' : rankHtml(prof)}</div>
       <div class="pc-wr">${p.hidden || !p.puuid ? '' : `<span class="full">${recentHtml(prof, qn)}</span><span class="compact">${recentHtml(prof, qn, true)}</span>`}</div>
+      ${withGames && !p.hidden && p.puuid ? gamesHtml(prof) : ''}
     </div>
   </div>`;
 }
@@ -125,7 +154,7 @@ function playerCard(p, prof, champId) {
 function viewChampSelect() {
   const cs = state.champselect || {};
   const team = cs.team || [];
-  const cards = team.map((p) => playerCard(p, profOf(p.puuid), p.championId || 0)).join('');
+  const cards = team.map((p) => playerCard(p, profOf(p.puuid), p.championId || 0, true)).join('');
   const bench = cs.benchEnabled
     ? `<div class="bench"><span class="bench-l">板凳</span>${(cs.bench || []).map((id) => champImg(id, 'champ sm', staticData.champions[id] || '')).join('') || '<span class="dim">空</span>'}</div>`
     : '';
@@ -157,7 +186,42 @@ function liveRow(p) {
     <div class="c-prof">${p.hidden || !p.puuid ? '<span class="dim">—</span>' : `${rankHtml(prof, true)}${recentHtml(prof, state.queue?.name, true)}`}</div>
     <div class="c-kda">${kda(p)}</div>
     <div class="c-cs">${p.cs}</div>
+    <div class="c-gold" title="身上裝備的總價(推算)">${kGold(p.gold)}</div>
     <div class="c-items">${itemsHtml}</div>
+  </div>`;
+}
+
+// 我方推薦出裝(後端算)：每件都附根據，滑鼠移上去看全部
+function recCell(p) {
+  const champ = champImg(p.champ?.id || p.champ?.key, 'champ sm', p.champ?.name || '');
+  const recs = p.rec || [];
+  if (!recs.length) return `<div class="rcell${p.me ? ' me' : ''}">${champ}<span class="pn dim">還沒有出裝資料</span></div>`;
+  const icons = recs.map((r) => `<span class="ri${r.counter ? ' counter' : ''}">${itemImg(r.id, `${r.name}\n${r.reasons.join('\n')}`)}</span>`).join('');
+  const top = recs[0];
+  const why = top.reasons.find((x) => x.includes('→')) || top.reasons[0];
+  return `<div class="rcell${p.me ? ' me' : ''}">
+    <div class="rc-top">${champ}<div class="rc-items">${icons}</div>${p.full ? '<span class="badge">滿裝可換</span>' : ''}</div>
+    <div class="rc-why"><b>${esc(top.name)}</b>${esc(why.replace('op.gg ARAM ', '：'))}</div>
+  </div>`;
+}
+
+function enemySummary(e) {
+  if (!e) return '';
+  const hot = (v, t) => (v >= t ? ' class="hot"' : '');
+  return `<span class="esum">對面：物理 <b${hot(e.phys, 60)}>${e.phys}%</b> 魔法 <b${hot(e.magic, 60)}>${e.magic}%</b><small>(${esc(e.src)})</small>
+    · 護甲 <b${hot(e.armorPct, 20)}>${e.armorPct}%</b> · 魔抗 <b${hot(e.mrPct, 20)}>${e.mrPct}%</b> · 吸血 <b${hot(e.healPct, 10)}>${e.healPct}%</b></span>`;
+}
+
+// 下一件大裝備預測：op.gg 該英雄 ARAM 常出裝為主，手上零件加分(後端算)
+function predictCell(p) {
+  const n = (p.next || [])[0];
+  const alt = (p.next || [])[1];
+  const champ = champImg(p.champ?.id || p.champ?.key, 'champ sm', p.champ?.name || '');
+  if (!n) return `<div class="pcell ${p.ally ? 'al' : 'en'}">${champ}<span class="pn dim">${p.full ? '裝備已滿' : '還猜不到'}</span></div>`;
+  return `<div class="pcell ${p.ally ? 'al' : 'en'}${p.me ? ' me' : ''}" title="${esc(alt ? `第二可能：${alt.name}` : '')}">
+    ${champ}<span class="arrow">→</span>${itemImg(n.id, n.name)}
+    <div class="pn"><b>${esc(n.name)}</b><small>差 ${num(n.left)} 金${n.popular ? ' · <i class="pop">常出</i>' : ''}</small>
+      <div class="pbar"><div style="width:${n.progress}%"></div></div></div>
   </div>`;
 }
 
@@ -182,7 +246,9 @@ function bar(cur, max, cls) {
 function viewLive() {
   const L = state.live;
   const ally = L.players.filter((p) => p.ally), enemy = L.players.filter((p) => !p.ally);
-  const center = `<span class="score"><b class="al">${L.kills?.ally ?? 0}</b><span class="clock" id="lol-clock">${mmss(L.time)}</span><b class="en">${L.kills?.enemy ?? 0}</b></span>`;
+  const ga = L.gold?.ally ?? 0, ge = L.gold?.enemy ?? 0, gd = ga - ge;
+  const center = `<div class="mid-stack"><span class="score"><b class="al">${L.kills?.ally ?? 0}</b><span class="clock" id="lol-clock">${mmss(L.time)}</span><b class="en">${L.kills?.enemy ?? 0}</b></span>
+    <span class="gold-line" title="雙方身上裝備總價(推算)"><b class="al">${kGold(ga)}</b><span class="gdiff ${gd > 0 ? 'up' : gd < 0 ? 'down' : ''}">${gd > 0 ? '+' : ''}${kGold(gd)}</span><b class="en">${kGold(ge)}</b></span></div>`;
   const self = L.self;
   const resCls = { MANA: 'mana', ENERGY: 'energy', NONE: 'none' }[self?.resType] || 'other';
   const selfHtml = self ? `<div class="self">
@@ -190,37 +256,58 @@ function viewLive() {
       ${bar(self.hp, self.maxHp, 'hp')}
       ${self.maxRes > 0 ? bar(self.res, self.maxRes, resCls) : ''}
     </div>` : '';
-  const evs = (L.events || []).slice(0, EVENT_MAX).map(eventHtml).join('') || '<li class="ev dim">還沒有事件</li>';
-  const colh = `<div class="lrow lhead"><div class="c-champ"></div><div class="c-spells"></div><div class="c-name">召喚師</div><div class="c-prof">牌位 / 近期</div><div class="c-kda">K / D / A</div><div class="c-cs">CS</div><div class="c-items">裝備</div></div>`;
+  const evs = (L.events || []).map(eventHtml).join('') || '<li class="ev dim">還沒有事件</li>';
+  const colh = `<div class="lrow lhead"><div class="c-champ"></div><div class="c-spells"></div><div class="c-name">召喚師</div><div class="c-prof">牌位 / 近期</div><div class="c-kda">K / D / A</div><div class="c-cs">CS</div><div class="c-gold">經濟</div><div class="c-items">裝備</div></div>`;
+  const predict = `<section class="predict"><div class="team-h"><span>我方推薦出裝</span>${enemySummary(L.enemyProfile)}</div>
+    <div class="pgrid">${ally.map(recCell).join('')}</div>
+    <div class="team-h sub"><span>敵方下一件預測</span><small>op.gg 常出裝 + 目前零件</small></div>
+    <div class="pgrid">${enemy.map(predictCell).join('')}</div></section>`;
   return `${header(center, self ? `<span class="hdr-gold">${num(Math.floor(self.gold))} 金</span>` : '')}
     <div class="lol-body live-body">
       <div class="teams">
-        ${teamBlock('我方', 'ally', colh + ally.map(liveRow).join(''), `<b>${L.kills?.ally ?? 0}</b>`)}
-        ${teamBlock('敵方', 'enemy', enemy.map(liveRow).join(''), `<b>${L.kills?.enemy ?? 0}</b>`)}
+        ${teamBlock('我方', 'ally', colh + ally.map(liveRow).join(''), `<b>${L.kills?.ally ?? 0} 殺 · ${kGold(ga)}</b>`)}
+        ${teamBlock('敵方', 'enemy', enemy.map(liveRow).join(''), `<b>${L.kills?.enemy ?? 0} 殺 · ${kGold(ge)}</b>`)}
+        ${predict}
       </div>
       <aside class="side">${selfHtml}<div class="feed"><div class="feed-h">即時事件</div><ul>${evs}</ul></div></aside>
     </div>`;
 }
 
+// 結算數字：1.2萬 這種短格式；null(拿不到) → —
+const short = (n) => (n == null ? '—' : n >= 10000 ? `${(n / 10000).toFixed(1)}萬` : num(n));
+
 function viewEog() {
   const E = state.eog;
-  const maxDmg = Math.max(1, ...E.teams.flatMap((t) => t.players.map((p) => p.dmg || 0)));
+  const all = E.teams.flatMap((t) => t.players);
+  const max = (k) => Math.max(0, ...all.map((p) => p[k] || 0));
+  const top = { dmg: max('dmg'), taken: max('taken'), heal: max('heal'), shield: max('shield'), cc: max('cc'), gold: max('gold') };
+  const best = (p, k) => (top[k] > 0 && p[k] === top[k] ? ' best' : '');
+  const statBar = (p, k, cls, tip) => `<div class="c-${cls}${best(p, k)}" title="${esc(tip)}"><span>${short(p[k])}</span>
+    <div class="dbar ${cls}"><div style="width:${((p[k] || 0) / (top[k] || 1)) * 100}%"></div></div></div>`;
+  const cell = (p, k, cls, tip, text = short(p[k])) => `<div class="c-${cls} sc${best(p, k)}" title="${esc(tip)}">${text}</div>`;
   const row = (p) => {
+    const dmgTip = p.dmgP == null ? '對英雄傷害' : `物理 ${num(p.dmgP)} · 魔法 ${num(p.dmgM)} · 真實 ${num(p.dmgT)}`;
+    const takenTip = p.mitigated == null ? '承受傷害' : `承受 ${num(p.taken)} · 自身減免 ${num(p.mitigated)}`;
+    const healTip = p.healAlly == null ? `總治療 ${num(p.heal)}` : `總治療 ${num(p.heal)} · 治療隊友 ${num(p.healAlly)}`;
+    const ccTip = p.ccTotal == null ? '控場分數(秒)' : `控場分數 ${p.cc ?? '—'} 秒 · 控場總時間 ${p.ccTotal} 秒`;
     const items = [...(p.items || [])].filter(Boolean);
     while (items.length < ITEM_SLOTS) items.push(0);
     return `<div class="erow${p.me ? ' me' : ''}">
       <div class="c-champ">${champImg(p.champ?.id || p.champ?.key, 'champ', p.champ?.name || '')}<span class="lvl">${p.level}</span></div>
       <div class="c-spells">${(p.spells || []).slice(0, 2).map((id) => spellImg(id, staticData.spells[id] || '')).join('')}</div>
       <div class="c-name"><div class="nm">${riotName(p)}</div><div class="cn">${esc(p.champ?.name || '')}</div></div>
-      <div class="c-kda">${kda(p)}</div>
-      <div class="c-dmg"><span>${num(p.dmg)}</span><div class="dbar"><div style="width:${((p.dmg || 0) / maxDmg) * 100}%"></div></div></div>
-      <div class="c-gold">${num(p.gold)}</div>
-      <div class="c-cs">${p.cs}</div>
+      <div class="c-kda" title="CS ${p.cs}">${kda(p)}</div>
+      ${statBar(p, 'dmg', 'dmg', dmgTip)}
+      ${statBar(p, 'taken', 'taken', takenTip)}
+      ${cell(p, 'heal', 'heal', healTip)}
+      ${cell(p, 'shield', 'shield', '護盾隊友(結算資料沒給就是 —)')}
+      ${cell(p, 'cc', 'cc', ccTip, p.cc == null ? '—' : `${p.cc}s`)}
+      ${cell(p, 'gold', 'gold', `金錢 ${num(p.gold)}`)}
       <div class="c-items">${items.slice(0, ITEM_SLOTS).map((id) => itemImg(id)).join('')}</div>
       <div class="c-augs">${(p.augments || []).map(augImg).join('')}</div>
     </div>`;
   };
-  const colh = `<div class="erow lhead"><div class="c-champ"></div><div class="c-spells"></div><div class="c-name">召喚師</div><div class="c-kda">K / D / A</div><div class="c-dmg">輸出傷害</div><div class="c-gold">金錢</div><div class="c-cs">CS</div><div class="c-items">裝備</div><div class="c-augs">強化</div></div>`;
+  const colh = `<div class="erow lhead"><div class="c-champ"></div><div class="c-spells"></div><div class="c-name">召喚師</div><div class="c-kda">K / D / A</div><div class="c-dmg">輸出</div><div class="c-taken">承受</div><div class="c-heal sc">治療</div><div class="c-shield sc">護盾</div><div class="c-cc sc">控場</div><div class="c-gold sc">金錢</div><div class="c-items">裝備</div><div class="c-augs">強化</div></div>`;
   const teams = [...E.teams].sort((a, b) => b.ally - a.ally).map((t, i) =>
     teamBlock(`${t.ally ? '我方' : '敵方'} · ${t.win ? '勝利' : '失敗'}`, `${t.ally ? 'ally' : 'enemy'}${t.win ? ' won' : ''}`,
       (i === 0 ? colh : '') + t.players.map(row).join(''), `<b>${num(t.kills)} 擊殺</b>`)).join('');

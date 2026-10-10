@@ -38,6 +38,7 @@ from cogs.lyrics_sources import SOURCES
 log = logging.getLogger(__name__)
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+EOG_KEEP = 180            # 秒：/act 自動模式下，結算畫面保留多久再切回歌詞
 DIST_DIR = os.path.join(ROOT, 'activity', 'dist')
 HOST = '127.0.0.1'
 PORT = int(os.getenv('LYRICS_PORT', '8765'))
@@ -85,6 +86,7 @@ class LyricsCog(commands.Cog):
         app.router.add_get('/ws', self._h_ws)
         app.router.add_get('/api/mode', self._h_mode)
         app.router.add_get('/lol/{tail:.*}', self._h_lol)
+        app.router.add_get('/valo/{tail:.*}', self._h_valo)
         app.router.add_get('/', self._h_index)
         if os.path.isdir(DIST_DIR):
             app.router.add_static('/', DIST_DIR)
@@ -275,7 +277,7 @@ class LyricsCog(commands.Cog):
     @staticmethod
     async def _no_cache(request, response):
         """Cloudflare 預設會把 .js/.css 快取 4 小時，改版後看不到；封面除外(有自己的 max-age)。"""
-        if not request.path.startswith(('/api/thumb', '/lol/img/')):
+        if not request.path.startswith(('/api/thumb', '/lol/img/', '/valo/img/')):
             response.headers['Cache-Control'] = 'no-cache'
 
     async def _h_index(self, request):
@@ -287,25 +289,48 @@ class LyricsCog(commands.Cog):
     async def _h_config(self, request):
         return web.json_response({'client_id': str(self.bot.application_id or '')})
 
+    def _auto_mode(self) -> str:
+        """/act 自動模式：哪個遊戲正在對局就顯示哪個；結算畫面保留 EOG_KEEP 秒；都沒有 → 歌詞。"""
+        now = time.time()
+        for name, live, mode in (('LolCog', ('champselect', 'ingame'), 'lol'), ('ValoCog', ('pregame', 'coregame'), 'valo')):
+            cog = self.bot.get_cog(name)
+            st = getattr(cog, 'state', None) or {}
+            if st.get('phase') in live:
+                return mode
+        for name, mode in (('LolCog', 'lol'), ('ValoCog', 'valo')):
+            st = getattr(self.bot.get_cog(name), 'state', None) or {}
+            if st.get('phase') == 'eog' and now - st.get('_eog_at', 0) < EOG_KEEP:
+                return mode
+        return 'lyrics'
+
     async def _h_mode(self, request):
-        """這個語音頻道最後用哪個指令開的 Activity(/lyrics 或 /lol)，前端據此切畫面。"""
+        """這個語音頻道最後用哪個指令開的 Activity(/lyrics、/lol、/valo-live，或 /act 自動)，前端據此切畫面。"""
         modes = getattr(self.bot, 'activity_modes', {})
         try:
             cid = int(request.query.get('c') or 0)
         except ValueError:
             cid = 0
-        mode = modes.get(cid)
+        mode = modes.get(cid) or 'lyrics'
+        auto = mode == 'auto'
+        if auto:
+            mode = self._auto_mode()
         if cid and hasattr(self.bot, 'activity_seen'):
             self.bot.activity_seen[cid] = time.monotonic()
         if request.query.get('first'):
-            log.info(f"Activity 開啟: 頻道 {request.query.get('c')} / 伺服器 {request.query.get('g')} → {mode or 'lyrics'}")
-        return web.json_response({'mode': mode or 'lyrics'})
+            log.info(f"Activity 開啟: 頻道 {request.query.get('c')} / 伺服器 {request.query.get('g')} → {mode}{'(自動)' if auto else ''}")
+        return web.json_response({'mode': mode, 'auto': auto})
 
     async def _h_lol(self, request):
         lol = self.bot.get_cog('LolCog')
         if not lol:
             raise web.HTTPServiceUnavailable(text='LoL 模組未載入')
         return await lol.handle(request, request.match_info['tail'])
+
+    async def _h_valo(self, request):
+        valo = self.bot.get_cog('ValoCog')
+        if not valo:
+            raise web.HTTPServiceUnavailable(text='Valorant 模組未載入')
+        return await valo.handle(request, request.match_info['tail'])
 
     def _snapshot(self, guild_id: int) -> Optional[dict]:
         music = self.bot.get_cog('MusicCog')
@@ -399,17 +424,24 @@ class LyricsCog(commands.Cog):
             pass
 
     # ── slash command ──
+    @app_commands.command(name='act', description='開啟 Activity（自動：有 LoL / Valorant 對局就顯示對局，否則顯示歌詞）')
+    async def act(self, interaction: discord.Interaction):
+        await self._open(interaction, 'auto', '✅ 已切換成自動模式')
+
     @app_commands.command(name='lyrics', description='在語音頻道開啟同步歌詞畫面（Discord Activity）')
     async def lyrics(self, interaction: discord.Interaction):
+        await self._open(interaction, 'lyrics', '✅ 已切換成歌詞畫面')
+
+    async def _open(self, interaction: discord.Interaction, mode: str, switched: str):
         if not interaction.user.voice:
-            await interaction.response.send_message('❌ 請先加入語音頻道再開歌詞畫面', ephemeral=True)
+            await interaction.response.send_message('❌ 請先加入語音頻道再開 Activity', ephemeral=True)
             return
         set_mode = getattr(self.bot, 'set_activity_mode', None)
         if set_mode:
-            set_mode(interaction, 'lyrics')
-        # Activity 已經開著 → 不再叫 Discord 開(會留下一行空的「使用了 /lyrics」)，畫面 3 秒內自己切
+            set_mode(interaction, mode)
+        # Activity 已經開著 → 不再叫 Discord 開(會留下一行空的「使用了 /xxx」)，畫面 3 秒內自己切
         if getattr(self.bot, 'activity_open', lambda i: False)(interaction):
-            await interaction.response.send_message('✅ 已切換成歌詞畫面', ephemeral=True)
+            await interaction.response.send_message(switched, ephemeral=True)
             return
         try:
             await interaction.response.launch_activity()

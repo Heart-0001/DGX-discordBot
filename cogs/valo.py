@@ -17,10 +17,13 @@ from urllib.parse import quote
 
 import aiohttp
 import discord
+from aiohttp import web
 from discord import app_commands
 from discord.ext import commands
 
 from cogs.riot_api import RateLimiter
+from cogs.valo_live import MODE_RECENT, RiotLink, shard_from_env
+from cogs.valo_live_parse import eog_table, mode_record, parse_match, recent_line
 from cogs.valo_parse import detail, mmr_summary, summarize
 
 log = logging.getLogger(__name__)
@@ -33,6 +36,9 @@ VAPI = 'https://valorant-api.com/v1'
 TRACK_EVERY = 60          # 秒：背景每輪查一位被追蹤的玩家
 BG_MIN_REMAINING = 12     # 剩餘額度少於這個就跳過背景查詢，留給互動指令
 MAX_TRACKED = 15
+ASSET_DIR = os.path.join(ROOT, 'data', 'valo_assets')
+LIVE_POLL_IDLE, LIVE_POLL_MATCH, LIVE_POLL_OFFLINE = 10, 5, 60   # 秒：/valo-live 畫面輪詢 GLZ 的間隔
+EOG_TRIES = 12            # 對局結束後賽後資料可能要等一下，最多試幾次
 COLOR_WIN, COLOR_LOSS, COLOR_DRAW = 0x3BA55D, 0xED4245, 0x99AAB5
 RID_RE = re.compile(r'^\s*([^#]{1,32})#([^#\s]{1,8})\s*$')
 
@@ -114,6 +120,7 @@ async def load_content(http: aiohttp.ClientSession) -> dict:
         c = {
             'agents': {a['uuid']: {'name': a['displayName'], 'icon': a.get('displayIcon')} for a in agents},
             'maps': {m['uuid']: m['displayName'] for m in maps},
+            'mapPaths': {m['mapUrl']: m['displayName'] for m in maps if m.get('mapUrl')},
             'mapIcons': {m['uuid']: m.get('listViewIcon') for m in maps},
             'tiers': {str(t['tier']): {'name': t['tierName'], 'icon': t.get('largeIcon') or t.get('smallIcon')}
                       for t in tiers[-1]['tiers']},
@@ -149,6 +156,17 @@ class ValoCog(commands.Cog):
         self._http: Optional[aiohttp.ClientSession] = None
         self._task: Optional[asyncio.Task] = None
         self.tracked: dict[str, dict] = self._load_tracked()
+        self.link: Optional[RiotLink] = None
+        # Activity 即時畫面(valo.js)：state 每變一次 version +1，WebSocket 據此推送
+        self.version = 0
+        self._changed = asyncio.Event()
+        self.state: dict = {'phase': 'offline', 'sub': '啟動中', 'me': '', 'match': None,
+                            'recents': {}, 'modes': {}, 'eog': None, 'score': None}
+        self._live_task: Optional[asyncio.Task] = None
+        self._live_mid = ''                        # 目前對局 id
+        self._live_hidden: set = set()
+        self._lookup_cache: dict[str, list] = {}   # puuid → [name, mmr, recent(近 5 場), mode(當前模式近 10 場)]，None = 還沒查到
+        self._eog_tries = 0
 
     async def cog_load(self):
         self._http = aiohttp.ClientSession(headers={'User-Agent': 'heart-discordbot-valo/1.0'})
@@ -156,13 +174,17 @@ class ValoCog(commands.Cog):
         if key:
             self.api = HenrikApi(key, self._http)
         self.content = await load_content(self._http)
+        self.link = RiotLink(os.getenv('LOL_SSH_HOST', 'pc'), shard_from_env(), self._http)
         self._task = asyncio.ensure_future(self._track_loop())
+        self._live_task = asyncio.ensure_future(self._live_loop())
         log.info(f'🔫 Valorant 模組：API {"已啟用" if self.api else "未設定 HENRIK_API_KEY"}，'
                  f'追蹤 {len(self.tracked)} 人')
 
     async def cog_unload(self):
         if self._task:
             self._task.cancel()
+        if self._live_task:
+            self._live_task.cancel()
         if self._http:
             await self._http.close()
 
@@ -179,6 +201,172 @@ class ValoCog(commands.Cog):
         with open(TRACK_FILE + '.tmp', 'w', encoding='utf-8') as f:
             json.dump(self.tracked, f, ensure_ascii=False, indent=1)
         os.replace(TRACK_FILE + '.tmp', TRACK_FILE)
+
+    # ── Activity 即時畫面：輪詢 ──
+    def _set(self, **kw):
+        changed = False
+        for k, v in kw.items():
+            if self.state.get(k) != v:
+                self.state[k] = v
+                changed = True
+        if changed:
+            self.version += 1
+            ev, self._changed = self._changed, asyncio.Event()
+            ev.set()
+
+    async def _live_loop(self):
+        await self.bot.wait_until_ready()
+        while True:
+            try:
+                delay = await self._live_tick()
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                log.warning(f'🔫 對局輪詢例外: {e!r}')
+                delay = LIVE_POLL_OFFLINE
+            await asyncio.sleep(delay)
+
+    def _cached(self, puuids: list[str]) -> tuple[dict, dict, dict, dict]:
+        c = self._lookup_cache
+        return ({p: c[p][0] for p in puuids if p in c}, {p: c[p][1] for p in puuids if p in c},
+                {p: c[p][2] for p in puuids if p in c and c[p][2] is not None},
+                {p: c[p][3] for p in puuids if p in c and c[p][3] is not None})
+
+    async def _lookup_players(self, puuids: list[str], queue: str, push) -> tuple[dict, dict, dict, dict]:
+        """同一場裡查過的人不重查。三階段各 push 一次：名字/牌位(1 秒) → 近 5 場(限速，約 20 秒) → 當前模式近 10 場。"""
+        c = self._lookup_cache
+        new = [p for p in puuids if p not in c]
+        if new:
+            names, mmrs, _ = await self.link.lookup_basic(new)
+            for p in new:
+                c[p] = [names.get(p) or {}, mmrs.get(p), None, None]
+            push(*self._cached(puuids))
+        todo = [p for p in puuids if c[p][2] is None]      # 還沒有、或上次沒查完整(429)
+        if todo:
+            recents = await self.link.lookup_recent(todo, self.content)
+            for p in todo:
+                c[p][2] = recents.get(p)
+            push(*self._cached(puuids))
+        todo = [p for p in puuids if c[p][3] is None]
+        if todo and queue:
+            modes = await self.link.lookup_recent(todo, self.content, MODE_RECENT, queue)
+            for p in todo:
+                c[p][3] = mode_record(modes[p], queue) if modes.get(p) is not None else None
+        return self._cached(puuids)
+
+    async def _live_tick(self) -> float:
+        if not self.link or not await self.link.token():
+            ok = await self.link.pc._run('echo ok', timeout=6) if self.link else None
+            self._set(phase='offline', sub='PC 離線' if not ok else 'Riot Client 未開啟', match=None)
+            return LIVE_POLL_OFFLINE
+        me = self.link.puuid
+        cur = await self.link.current_match()
+        if not cur:
+            if self._live_mid and self.state.get('phase') == 'coregame':
+                # 剛打完：抓賽後計分板(資料可能要等幾秒才有)
+                self._eog_tries += 1
+                d = await self.link.pd(f'/match-details/v1/matches/{self._live_mid}')
+                if d and (d.get('matchInfo') or {}).get('isCompleted'):
+                    pu = [p['subject'] for p in d.get('players') or [] if p.get('subject')]
+                    names = {p: c[0] for p, c in self._lookup_cache.items() if p in pu}
+                    missing = [p for p in pu if p not in names]
+                    if missing:
+                        names.update(await self.link.names(missing))
+                    self.state['_eog_at'] = time.time()
+                    self._set(eog=eog_table(d, me, self._live_hidden, self.content, names))
+                elif self._eog_tries < EOG_TRIES:
+                    return LIVE_POLL_MATCH
+            self._live_mid, self._live_hidden, self._eog_tries = '', set(), 0
+            self._lookup_cache.clear()
+            self._set(phase='eog' if self.state.get('eog') else 'idle', sub='待機中', me=me, match=None, recents={}, modes={}, score=None)
+            return LIVE_POLL_IDLE
+        kind, m = cur
+        mid = m.get('MatchID') or m.get('ID') or ''
+        if mid != self._live_mid:
+            self._live_mid, self._live_hidden, self._eog_tries = mid, set(), 0
+            self._lookup_cache.clear()
+            self.state['eog'] = None
+        pl = m.get('Players') if kind == 'coregame' else (m.get('AllyTeam') or {}).get('Players')
+        puuids = [p['Subject'] for p in pl or [] if p.get('Subject')]
+        self._live_hidden |= {p['Subject'] for p in pl or [] if (p.get('PlayerIdentity') or {}).get('Incognito')}
+        season = await self.link.active_season()
+
+        def push(names, mmrs, recents, modes):
+            self._set(phase=kind, sub='選角中' if kind == 'pregame' else '對局中', me=me,
+                      match=parse_match(kind, m, names, mmrs, season, self.content, me), recents=recents, modes=modes)
+        push(*self._cached(puuids))
+        queue = (self.state['match'] or {}).get('queueId') or ''
+        push(*await self._lookup_players(puuids, queue, push))
+        if kind == 'coregame':
+            self._set(score=await self.link.score())
+        return LIVE_POLL_MATCH
+
+    def public_state(self) -> dict:
+        return {k: v for k, v in self.state.items() if not k.startswith('_')}
+
+    # ── HTTP(由 LyricsCog 的伺服器轉進來：/valo/...) ──
+    async def handle(self, request: web.Request, tail: str):
+        if tail == 'ws':
+            return await self._h_ws(request)
+        if tail == 'state':
+            return web.json_response(self.public_state())
+        m = re.match(r'^img/(agent|tier)/([a-z0-9\-]+)\.png$', tail)
+        if m:
+            path = await self._asset(m.group(1), m.group(2))
+            if not path:
+                raise web.HTTPNotFound()
+            return web.FileResponse(path, headers={'Cache-Control': 'max-age=86400'})
+        raise web.HTTPNotFound()
+
+    async def _asset(self, kind: str, key: str) -> Optional[str]:
+        """特務 / 牌位圖示：第一次從 valorant-api.com 抓下來存 data/valo_assets/(Discord CSP 不給載外站圖)。"""
+        path = os.path.join(ASSET_DIR, kind, f'{key}.png')
+        if os.path.exists(path):
+            return path
+        url = (self.content['agents'].get(key) or {}).get('icon') if kind == 'agent' else self._tier_icon(key)
+        if not url or not url.startswith('https://media.valorant-api.com/'):
+            return None
+        try:
+            async with self._http.get(url, timeout=aiohttp.ClientTimeout(total=20)) as r:
+                if r.status != 200:
+                    return None
+                data = await r.read()
+        except (aiohttp.ClientError, asyncio.TimeoutError):
+            return None
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path + '.tmp', 'wb') as f:
+            f.write(data)
+        os.replace(path + '.tmp', path)
+        return path
+
+    async def _h_ws(self, request):
+        ws = web.WebSocketResponse(heartbeat=20)
+        await ws.prepare(request)
+        reader = asyncio.ensure_future(self._drain(ws))
+        sent = -1
+        try:
+            while not ws.closed:
+                ev = self._changed
+                if self.version != sent:
+                    sent = self.version
+                    await ws.send_json({'type': 'state', **self.public_state()})
+                    continue
+                try:
+                    await asyncio.wait_for(ev.wait(), 10)
+                except asyncio.TimeoutError:
+                    pass
+        except (ConnectionResetError, asyncio.CancelledError):
+            pass
+        except Exception as e:
+            log.warning(f'🔫 WebSocket 例外: {e!r}')
+        finally:
+            reader.cancel()
+        return ws
+
+    @staticmethod
+    async def _drain(ws: web.WebSocketResponse):
+        async for _ in ws:
+            pass
 
     # ── embed ──
     def _tier_icon(self, tid) -> Optional[str]:
@@ -250,7 +438,7 @@ class ValoCog(commands.Cog):
                 star = '⭐' if p['puuid'] == t['mvp'] else ''
                 stats = (f"爆頭 {p['hs']}%" if p['acs'] is None
                          else f"ACS {p['acs']}・ADR {p['adr']}・爆頭 {p['hs']}%・首殺 {p['fb']}")
-                lines.append(f"{me}**{_esc(p['agent'])}** {_esc(p['name'])}{star}　{p['k']}/{p['d']}/{p['a']}　{stats}")
+                lines.append(f"{me}**{_esc(p['agent'])}** {_esc(p['name'])}{'#' + _esc(p['tag']) if p.get('tag') else ''}{star}　{p['k']}/{p['d']}/{p['a']}　{stats}")
             emb.add_field(name=head, value='\n'.join(lines)[:1024] or '—', inline=False)
         emb.set_footer(text='ACS = 每回合平均分數・ADR = 每回合平均傷害・資料來源 HenrikDev')
         return emb
@@ -267,7 +455,58 @@ class ValoCog(commands.Cog):
                                             options=opts[:25]))
         return view
 
+    def _live_embed(self, d: dict, recents: dict) -> discord.Embed:
+        stage = '選角中（只看得到我方）' if d['kind'] == 'pregame' else '對局中'
+        emb = discord.Embed(title=f"🔫 {d['queue']}・{_esc(d['map'])}　{stage}", color=0xFF4655)
+        for t in d['teams']:
+            lines = []
+            for p in t['players']:
+                who = '🙈 隱藏名字' if p['hidden'] else f"{_esc(p['name'])}#{_esc(p['tag'])}" if p['name'] else '?'
+                r = p['rank']
+                rank = f"{r['name']} {r['rr']} RR" if r['tier'] else '未定級'
+                season = f"　本季 {r['wins']}勝{r['games'] - r['wins']}敗 {r['wr']}%" if r['games'] else ''
+                peak = f"　峰 {r['peakName']}" if r['peak'] and r['peak'] > r['tier'] else ''
+                lv = f"　Lv {p['level']}" if p['level'] else ''
+                lock = '' if p['locked'] else '（未鎖定）'
+                rec = recent_line(recents.get(p['puuid']) or [])
+                lines.append(f"{'▶ ' if p['me'] else ''}**{_esc(p['agent'])}**{lock} {who}　{rank}{season}{peak}{lv}"
+                             + (f'\n　　{rec}' if rec else ''))
+            emb.add_field(name='我方' if t['mine'] else '敵方', value='\n'.join(lines)[:1024] or '—', inline=False)
+        emb.set_footer(text='牌位 = 競技模式本季；資料直接來自 Riot，隱藏名字的玩家不顯示名字')
+        return emb
+
     # ── 指令 ──
+    @app_commands.command(name='valo-live', description='開啟 Valorant 對局畫面（隊友／對手牌位、近況）；text=True 改成貼一則文字')
+    @app_commands.describe(text='只貼一則文字版，不開 Activity')
+    async def valo_live(self, interaction: discord.Interaction, text: bool = False):
+        if not text:
+            if not interaction.user.voice:
+                await interaction.response.send_message('❌ 請先加入語音頻道再開 Valorant 畫面（或用 text:True）', ephemeral=True)
+                return
+            set_mode = getattr(self.bot, 'set_activity_mode', None)
+            if set_mode:
+                set_mode(interaction, 'valo')
+            if getattr(self.bot, 'activity_open', lambda i: False)(interaction):
+                await interaction.response.send_message('✅ 已切換成 Valorant 畫面', ephemeral=True)
+                return
+            try:
+                await interaction.response.launch_activity()
+            except discord.HTTPException as e:
+                log.error(f'launch_activity 失敗: {e!r}')
+                await interaction.response.send_message('❌ 無法開啟 Activity', ephemeral=True)
+            return
+        await interaction.response.defer(thinking=True)
+        cur = await self.link.current_match() if self.link else None
+        if not cur:
+            await interaction.followup.send('目前沒有進行中的 Valorant 對局（或電腦沒開 Riot Client）')
+            return
+        kind, m = cur
+        pl = m.get('Players') if kind == 'coregame' else (m.get('AllyTeam') or {}).get('Players')
+        puuids = [p['Subject'] for p in pl or [] if p.get('Subject')]
+        names, mmrs, season, recents = await self.link.lookup(puuids, self.content)
+        await interaction.followup.send(embed=self._live_embed(
+            parse_match(kind, m, names, mmrs, season, self.content, self.link.puuid), recents))
+
     async def _resolve(self, interaction: discord.Interaction, player: str) -> Optional[dict]:
         if not self.api:
             await interaction.followup.send('❌ 沒有設定 HENRIK_API_KEY')

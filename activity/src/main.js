@@ -1,5 +1,6 @@
 import { DiscordSDK } from '@discord/embedded-app-sdk';
 import { startLol, stopLol } from './lol.js';
+import { startValo, stopValo } from './valo.js';
 
 // 機器人量到的位置 = 已送出的音框。實測(2026-10-08)歌詞要比這個位置早 0.25 秒亮才對得上耳朵，
 // 所以預設提前 0.25 秒；使用者可用右下角 ± 再微調(存在 localStorage)。
@@ -15,6 +16,7 @@ const FADE_TOP = 0.16;      // style.css 的 mask 上方淡出到 14%，留一�
 
 const $ = (id) => document.getElementById(id);
 const app = $('app'), lyricsEl = $('lyrics'), statusEl = $('status');
+const mini = $('mini');   // 遊戲畫面時，歌詞縮成頂列左邊的一小條
 
 // ── 使用者延遲微調 ──
 let userOffset = 0;
@@ -83,6 +85,8 @@ function onTrack(m) {
   app.classList.remove('idle');
   $('title').textContent = m.title;
   $('artist').textContent = m.artist;
+  $('mini-title').textContent = m.artist ? `${m.title} — ${m.artist}` : m.title;
+  $('mini-cover').src = m.thumb || '';
   setImage(m.thumb);
   clock.reset();
   clock.pausedPos = 0;
@@ -192,7 +196,19 @@ function frame() {
       setActive(idx);
     }
   }
+  updateMini();
   requestAnimationFrame(frame);
+}
+
+// 小歌詞條：遊戲模式 + 有在放歌才顯示(PiP 由 CSS 藏)
+function updateMini() {
+  const show = track && mode && mode !== 'lyrics';
+  mini.hidden = !show;
+  if (!show) return;
+  const cur = lines[activeIdx];
+  const text = cur && !cur.gap ? cur.text : (lines.length ? '♪' : (statusEl.textContent || ''));
+  if ($('mini-line').textContent !== text) $('mini-line').textContent = text;
+  mini.classList.toggle('paused', app.classList.contains('paused'));
 }
 
 window.addEventListener('resize', () => { const i = activeIdx; activeIdx = -2; setActive(i); });
@@ -209,7 +225,7 @@ function connect(guildId) {
   ws.onmessage = (ev) => {
     const m = JSON.parse(ev.data);
     if (m.type === 'idle') {
-      track = null; lines = [];
+      track = null; lines = []; mini.hidden = true;
       app.classList.add('idle');
       setImage('');
       lyricsEl.innerHTML = '';
@@ -224,28 +240,18 @@ function connect(guildId) {
     }
   };
   ws.onclose = () => {
-    if (lyricsWs !== ws || !lyricsOn) return;   // 已切到 LoL 模式，不重連
+    if (lyricsWs !== ws || !lyricsOn) return;
     showStatus('連線中斷，重新連線中…');
     setTimeout(() => connect(guildId), 2000);
   };
 }
 
-// ── 模式切換：同一個 Activity 依頻道最近用的指令顯示 /lyrics 或 /lol ──
+// ── 模式切換：同一個 Activity 依頻道最近用的指令顯示歌詞 / LoL / Valorant(/act 則由機器人自動判斷) ──
+// 歌詞的 WebSocket 一直連著：遊戲畫面時歌詞縮成頂列的小條(#mini)
 let mode = null;
 let rafStarted = false;
-function setMode(m, guildId) {
-  if (m === mode) return;
-  mode = m;
-  document.documentElement.classList.toggle('mode-lol', m === 'lol');
-  if (m === 'lol') {
-    lyricsOn = false;
-    const ws = lyricsWs; lyricsWs = null;
-    if (ws) ws.close();
-    track = null; lines = [];
-    startLol($('lol'));
-    return;
-  }
-  stopLol();
+function startLyrics(guildId) {
+  if (lyricsOn) return;
   if (!guildId) {
     showStatus('請在 Discord 伺服器的語音頻道中開啟');
     return;
@@ -256,6 +262,17 @@ function setMode(m, guildId) {
   showStatus('連線中…');
   connect(guildId);
   if (!rafStarted) { rafStarted = true; requestAnimationFrame(frame); }
+}
+function setMode(m, guildId) {
+  startLyrics(guildId);
+  if (m === mode) return;
+  mode = m;
+  // LoL 與 Valorant 共用 #lol 這塊畫面(樣式也共用，valo 只換配色)
+  document.documentElement.classList.toggle('mode-lol', m === 'lol' || m === 'valo');
+  if (m === 'lol') { stopValo(); startLol($('lol')); } else if (m === 'valo') { stopLol(); startValo($('lol')); } else { stopLol(); stopValo(); }
+  updateMini();
+  // 切回歌詞時重新定位目前那句(藏著的時候 offsetHeight 都是 0)
+  if (m === 'lyrics') { const i = activeIdx; activeIdx = -2; setActive(i); }
 }
 
 // 部署新版後，開著的 Activity 會一直跑舊程式 → 每分鐘看一下 index.html 的版本號，變了就重新載入
@@ -293,7 +310,7 @@ async function main() {
         first = false;
         const r = await fetch(`api/mode?${q}`);
         const j = await r.json();
-        setMode(j.mode === 'lol' ? 'lol' : 'lyrics', guildId);
+        setMode(['lol', 'valo'].includes(j.mode) ? j.mode : 'lyrics', guildId);
       } catch (e) {
         if (!mode) setMode('lyrics', guildId);
       }
@@ -302,8 +319,8 @@ async function main() {
     setInterval(ask, 3000);
     return;
   }
-  // 瀏覽器測試：?mode=lol 強制 LoL 模式
-  setMode(params.get('mode') === 'lol' ? 'lol' : 'lyrics', guildId);
+  // 瀏覽器測試：?mode=lol / ?mode=valo 強制模式
+  setMode(['lol', 'valo'].includes(params.get('mode')) ? params.get('mode') : 'lyrics', guildId);
 }
 
 main().catch((e) => showStatus(`載入失敗：${e.message || e}`));

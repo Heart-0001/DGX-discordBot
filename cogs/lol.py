@@ -634,6 +634,8 @@ class LolCog(commands.Cog):
                     if old.get('gameId') != eog['gameId']:
                         self._dump_json(EOG_RAW_FILE, raw)
                     self._save_last(eog)
+                if self.state.get('phase') != 'eog':
+                    self.state['_eog_at'] = time.time()   # /act 自動模式：結算畫面保留幾分鐘再切回歌詞
                 self._set(phase='eog', sub='結算', eog=eog, live=None, champselect=None)
             return POLL_ACTIVE
 

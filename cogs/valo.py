@@ -723,6 +723,16 @@ class ValoCog(commands.Cog):
     @app_commands.describe(player='玩家，例如 名字#1234')
     async def track_add(self, interaction: discord.Interaction, player: str):
         await interaction.response.defer(thinking=True)
+        gid = str(interaction.guild_id or 0)
+        rid = parse_rid(player)
+        key = self._tracked_key(rid)
+        if key:   # 已經在追蹤(別的伺服器加的)→ 這個伺服器也要收：記這裡的頻道就好，不重抓
+            self._channels(self.tracked[key])[gid] = interaction.channel_id
+            self._save_tracked()
+            t = self.tracked[key]
+            await interaction.followup.send(f"✅ **{_esc(t['name'])}#{_esc(t['tag'])}** 的戰績也會發到 <#{interaction.channel_id}>"
+                                            f"（這個伺服器原本的設定已改成這個頻道）")
+            return
         if len(self.tracked) >= MAX_TRACKED:
             await interaction.followup.send(f'❌ 最多追蹤 {MAX_TRACKED} 人（API 額度有限）')
             return
@@ -733,32 +743,50 @@ class ValoCog(commands.Cog):
         latest = await self.api.matches(region, acc['name'], acc['tag'], 1)
         last_id = ((latest or [{}])[0].get('metadata') or {}).get('match_id')
         self.tracked[acc['puuid']] = {'name': acc['name'], 'tag': acc['tag'], 'region': region,
-                                      'channel': interaction.channel_id, 'last': last_id,
+                                      'channels': {gid: interaction.channel_id}, 'last': last_id,
                                       'by': interaction.user.id}
         self._save_tracked()
         await interaction.followup.send(f"✅ 開始追蹤 **{_esc(acc['name'])}#{_esc(acc['tag'])}**，"
                                         f"之後每打完一場會發到 <#{interaction.channel_id}>"
-                                        f"（大約 {self._cycle_minutes()} 分鐘內）")
+                                        f"（大約 {self._cycle_minutes()} 分鐘內；別的伺服器要收就在那邊再 add 一次）")
+
+    def _tracked_key(self, rid) -> Optional[str]:
+        return next((pu for pu, t in self.tracked.items()
+                     if rid and t['name'].lower() == rid[0].lower() and t['tag'].lower() == rid[1].lower()), None)
+
+    def _channels(self, t: dict) -> dict:
+        """每個伺服器一個頻道：{guild_id: channel_id}。舊格式只有一個 channel → 轉過去。"""
+        if 'channels' not in t:
+            ch = self.bot.get_channel(t.get('channel') or 0)
+            t['channels'] = {str(ch.guild.id): ch.id} if ch and getattr(ch, 'guild', None) else {}
+            t.pop('channel', None)
+        return t['channels']
 
     @track.command(name='remove', description='取消追蹤玩家')
     @app_commands.describe(player='玩家，例如 名字#1234')
     async def track_remove(self, interaction: discord.Interaction, player: str):
-        rid = parse_rid(player)
-        key = next((pu for pu, t in self.tracked.items()
-                    if rid and t['name'].lower() == rid[0].lower() and t['tag'].lower() == rid[1].lower()), None)
-        if not key:
-            await interaction.response.send_message('❌ 名單裡沒有這個人，用 `/valo-track list` 看名單', ephemeral=True)
+        key = self._tracked_key(parse_rid(player))
+        gid = str(interaction.guild_id or 0)
+        if not key or gid not in self._channels(self.tracked[key]):
+            await interaction.response.send_message('❌ 這個伺服器沒有追蹤這個人，用 `/valo-track list` 看名單', ephemeral=True)
             return
-        t = self.tracked.pop(key)
+        t = self.tracked[key]
+        chs = self._channels(t)
+        chs.pop(gid, None)
+        if not chs:   # 沒有任何伺服器要收了才真的停止查
+            self.tracked.pop(key)
         self._save_tracked()
-        await interaction.response.send_message(f"✅ 已取消追蹤 **{_esc(t['name'])}#{_esc(t['tag'])}**")
+        await interaction.response.send_message(f"✅ 這個伺服器已取消追蹤 **{_esc(t['name'])}#{_esc(t['tag'])}**"
+                                                + ('' if chs else '（其他伺服器也沒在追，已完全停止）'))
 
     @track.command(name='list', description='目前追蹤中的玩家')
     async def track_list(self, interaction: discord.Interaction):
-        if not self.tracked:
-            await interaction.response.send_message('目前沒有追蹤任何人，用 `/valo-track add` 加入', ephemeral=True)
+        gid = str(interaction.guild_id or 0)
+        lines = [f"・{_esc(t['name'])}#{_esc(t['tag'])} → <#{self._channels(t)[gid]}>"
+                 for t in self.tracked.values() if gid in self._channels(t)]
+        if not lines:
+            await interaction.response.send_message('這個伺服器目前沒有追蹤任何人，用 `/valo-track add` 加入', ephemeral=True)
             return
-        lines = [f"・{_esc(t['name'])}#{_esc(t['tag'])} → <#{t['channel']}>" for t in self.tracked.values()]
         await interaction.response.send_message(
             f"追蹤中（每人約 {self._cycle_minutes()} 分鐘檢查一次）：\n" + '\n'.join(lines), ephemeral=True)
 
@@ -832,8 +860,8 @@ class ValoCog(commands.Cog):
 
     async def _post_match(self, t: dict, puuid: str, m: dict):
         s = summarize(m, puuid, self.content)
-        ch = self.bot.get_channel(t['channel'])
-        if not s or not ch:
+        chs = [c for c in (self.bot.get_channel(cid) for cid in self._channels(t).values()) if c]
+        if not s or not chs:
             return
         color = COLOR_DRAW if s['draw'] or s['won'] is None else (COLOR_WIN if s['won'] else COLOR_LOSS)
         if s.get('ffa'):
@@ -855,10 +883,11 @@ class ValoCog(commands.Cog):
         icon = (self.content['agents'].get(s['agentId']) or {}).get('icon')
         if icon:
             emb.set_thumbnail(url=icon)
-        try:
-            await ch.send(embed=emb, view=self._select(t['region'], puuid, [s]))
-        except discord.HTTPException as e:
-            log.warning(f'🔫 追蹤通知發送失敗: {e!r}')
+        for ch in chs:   # 每個伺服器各發一份
+            try:
+                await ch.send(embed=emb, view=self._select(t['region'], puuid, [s]))
+            except discord.HTTPException as e:
+                log.warning(f'🔫 追蹤通知發送失敗 <#{ch.id}>: {e!r}')
 
 
 async def setup(bot: commands.Bot):

@@ -324,6 +324,7 @@ class ValoCog(commands.Cog):
                              for p, c in self._lookup_cache.items() if c and c[1]}
                     self.state['_eog_at'] = time.time()
                     self._set(eog=eog_table(d, me, self._live_hidden, self.content, names, rr, tiers))
+                    asyncio.ensure_future(self._track_now(me, self._live_mid))   # 有被追蹤就馬上去查、不等輪到
                 elif self._eog_tries < EOG_TRIES:
                     return LIVE_POLL_MATCH
             self._live_mid, self._live_hidden, self._eog_tries = '', set(), 0
@@ -848,21 +849,38 @@ class ValoCog(commands.Cog):
             return
         # 上次記的那場之後的都是新的；記的那場不在這 3 場裡(很久沒查或第一次)就只發最新一場
         new = done[ids.index(t['last']) + 1:] if t.get('last') in ids else done[-1:]
-        t['last'] = ids[-1]
         # 改過名 → 用對戰裡的新名字
         me = next((p for p in done[-1].get('players') or [] if p.get('puuid') == puuid), None)
         if me:
             t['name'], t['tag'] = me.get('name', t['name']), me.get('tag', t['tag'])
-        self._save_tracked()
+        log.info(f"🔫 追蹤 {t['name']}：新場次 {len(new)} 場 {[m['metadata']['match_id'][:8] for m in new]}")
         for m in new:
             self.api.remember_match(t['region'], m)
-            await self._post_match(t, puuid, m)
+            # 發成功才記住這場；發到一半 bot 被重啟的話下次還會補發
+            if await self._post_match(t, puuid, m):
+                t['last'] = m['metadata']['match_id']
+                self._save_tracked()
 
-    async def _post_match(self, t: dict, puuid: str, m: dict):
+    async def _track_now(self, puuid: str, match_id: str):
+        """本人(Activity 看到的對局)剛打完 → 不等輪到，每 20 秒查一次 HenrikDev，最多 10 分鐘。"""
+        if puuid not in self.tracked or not self.api:
+            return
+        for _ in range(30):
+            if self.tracked.get(puuid, {}).get('last') == match_id:
+                return
+            try:
+                await self._check_one(puuid)
+            except Exception as e:
+                log.warning(f'🔫 追蹤(即時)例外: {e!r}')
+            await asyncio.sleep(20)
+
+    async def _post_match(self, t: dict, puuid: str, m: dict) -> bool:
         s = summarize(m, puuid, self.content)
         chs = [c for c in (self.bot.get_channel(cid) for cid in self._channels(t).values()) if c]
         if not s or not chs:
-            return
+            log.warning(f"🔫 追蹤 {t['name']}：跳過 {m['metadata']['match_id'][:8]}"
+                        f"（{'找不到這位玩家的資料' if not s else '頻道不存在 ' + str(self._channels(t))}）")
+            return bool(chs)   # 玩家資料真的沒有就不要一直重發；頻道沒了則留著下次再試
         color = COLOR_DRAW if s['draw'] or s['won'] is None else (COLOR_WIN if s['won'] else COLOR_LOSS)
         if s.get('ffa'):
             res = s['score'] or '結束'
@@ -883,11 +901,15 @@ class ValoCog(commands.Cog):
         icon = (self.content['agents'].get(s['agentId']) or {}).get('icon')
         if icon:
             emb.set_thumbnail(url=icon)
+        ok = False
         for ch in chs:   # 每個伺服器各發一份
             try:
                 await ch.send(embed=emb, view=self._select(t['region'], puuid, [s]))
+                ok = True
+                log.info(f"🔫 追蹤 {t['name']}：{m['metadata']['match_id'][:8]} 已發到 #{ch.name}")
             except discord.HTTPException as e:
                 log.warning(f'🔫 追蹤通知發送失敗 <#{ch.id}>: {e!r}')
+        return ok
 
 
 async def setup(bot: commands.Bot):

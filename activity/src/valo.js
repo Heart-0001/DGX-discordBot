@@ -183,16 +183,17 @@ function viewEog() {
   const mine = e.teams.find((t) => t.mine);
   const res = mine && mine.won != null ? (mine.won ? '勝利' : '落敗') : '結束';
   const two = e.teams.length === 2;
-  const score = two ? `${e.teams[0].rounds} : ${e.teams[1].rounds}` : '';
-  // 回合制跟遊戲內 TAB 一樣顯示 ACS / ADR(每回合平均)；團隊死鬥只有 1 回合 → 顯示整場總分
+  // 回合制跟遊戲內 TAB 一樣顯示 ACS / ADR(每回合平均)；團隊死鬥只有 1 回合 → 顯示整場總分，比數也用總分
   const rb = e.teams.some((t) => t.players.some((p) => p.rounds > 1));
+  const score = !two ? '' : rb ? `${e.teams[0].rounds} : ${e.teams[1].rounds}`
+    : e.teams[0].points != null ? `${e.teams[0].points} : ${e.teams[1].points}` : '';
   const byId = {};
   e.teams.forEach((t) => t.players.forEach((p) => { byId[p.puuid] = p; }));
   const tierName = (p) => (p.rr && p.rr.after ? '' : '');
   const rankCell = (p) => {
     const rr = p.rr;
     const tier = rr && rr.after ? rr.after : p.tier;
-    if (!tier && !rr) return '';
+    if (!tier && !rr) return '<span class="rank unranked"><small>未定級</small></span>';
     const delta = rr && rr.earned != null ? `<small class="${rr.earned >= 0 ? 'good' : 'bad'}">${rr.earned >= 0 ? '+' : ''}${rr.earned}</small>` : '';
     return `<span class="rank ${TIER_CLS(tier)}" title="${rr && rr.rrAfter != null ? `${rr.rrAfter} RR` : ''}">${tierImg(tier)}${delta}</span>`;
   };

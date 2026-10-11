@@ -146,8 +146,10 @@ def _std_match():
 def test_eog_extras_full():
     from cogs.valo_live_parse import eog_table
     content = dict(CONTENT, weapons={'w1': '幻象', 'w2': '暴徒'}, ceremonies={'ceremonyclutch': 'Clutch 翻盤手'})
-    e = eog_table(_std_match(), 'me', set(), content, None, {'me': {'earned': 17, 'after': 7, 'rrAfter': 55}})
+    e = eog_table(_std_match(), 'me', set(), content, None, {'me': {'earned': 17, 'after': 7, 'rrAfter': 55}}, {'r2': 12})
     me = next(p for t in e['teams'] for p in t['players'] if p['me'])
+    r2 = next(p for t in e['teams'] for p in t['players'] if p['puuid'] == 'r2')
+    assert me['tier'] == 7 and r2['tier'] == 12   # match-details 給的優先，0 才用對局中查到的
     assert me['hs'] == 50 and me['kast'] == 50 and me['fb'] == 0 and me['fd'] == 1
     assert me['clutch'] == ['1v2'] and me['mk'] == [0, 0, 0] and me['econ'] == 4000 and me['weapon'] == '幻象'
     assert me['casts'] == [1, 2, 3, 0] and me['party'] == 'A' and me['rr']['earned'] == 17 and me['level'] == 10
@@ -164,8 +166,11 @@ def test_eog_single_round_mode_skips_round_stats():
     d = _std_match()
     d['matchInfo']['queueID'] = 'hurm'
     d['roundResults'] = d['roundResults'][:1]
-    me = next(p for t in eog_table(d, 'me', set(), CONTENT)['teams'] for p in t['players'] if p['me'])
+    d['teams'][0]['numPoints'] = 100
+    e = eog_table(d, 'me', set(), CONTENT)
+    me = next(p for t in e['teams'] for p in t['players'] if p['me'])
     assert me['kast'] is None and me['mk'] is None and me['clutch'] == [] and me['fb'] == 0
+    assert e['teams'][0]['points'] == 100
 
 
 def test_henrik_to_riot_roundtrip():

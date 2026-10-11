@@ -129,10 +129,11 @@ def recent_line(games: list[dict]) -> str:
 
 
 def eog_table(d: dict, me: str, hidden: set, content: dict, names: Optional[dict] = None,
-              rr: Optional[dict] = None) -> dict:
+              rr: Optional[dict] = None, tiers: Optional[dict] = None) -> dict:
     """pd /match-details 賽後 → {map, queue, teams:[{mine, won, rounds, players:[...]}]}。
     hidden: 對局中開隱藏名字的 puuid；names: name-service 查到的名字(match-details 現在不給名字)；
-    rr: {puuid: competitiveupdates 的這場 RR 變化}(只有競技模式有)。"""
+    rr: {puuid: competitiveupdates 的這場 RR 變化}(只有競技模式有)；
+    tiers: {puuid: 牌位 id}(對局中用 mmr 查到的；match-details 的 competitiveTier 非競技模式一律 0)。"""
     names = names or {}
     info = d.get('matchInfo') or {}
     agents = content.get('agents', {})
@@ -163,14 +164,15 @@ def eog_table(d: dict, me: str, hidden: set, content: dict, names: Optional[dict
             'k': st.get('kills', 0), 'd': st.get('deaths', 0), 'a': st.get('assists', 0),
             'score': st.get('score', 0), 'rounds': st.get('roundsPlayed', 0),
             'dmg': sum(r.get('damage', 0) for r in p.get('roundDamage') or []),
-            'tier': p.get('competitiveTier') or 0, 'level': p.get('accountLevel'),
+            'tier': p.get('competitiveTier') or (tiers or {}).get(pu) or 0, 'level': p.get('accountLevel'),
             'mvp': pu == (tinfo.get(p.get('teamId')) or {}).get('mvp'),
         })
     out = []
     for tid, pl in teams.items():
         t = tinfo.get(tid) or {}
         pl.sort(key=lambda x: -x['score'])
-        out.append({'mine': tid == my_team, 'won': t.get('won'), 'rounds': t.get('roundsWon', 0), 'players': pl})
+        out.append({'mine': tid == my_team, 'won': t.get('won'), 'rounds': t.get('roundsWon', 0),
+                    'points': t.get('numPoints'), 'players': pl})   # points: 團隊死鬥等單回合模式的總分
     out.sort(key=lambda t: not t['mine'])
     if queue == 'deathmatch':          # 死鬥每人一隊 → 併成一張表
         allp = sorted([p for t in out for p in t['players']], key=lambda x: -x['score'])
@@ -367,7 +369,10 @@ def henrik_to_riot(m: dict) -> dict:
             'platformInfo': {'platformType': p.get('platform') or ''},
             'behaviorFactors': {'afkRounds': (p.get('behavior') or {}).get('afk_rounds') or 0},
         })
-    teams = [{'teamId': t.get('team_id'), 'won': t.get('won'), 'roundsWon': (t.get('rounds') or {}).get('won', 0),
+    single = len(rounds) <= 1   # HenrikDev 單回合模式把總分塞在 rounds.won
+    teams = [{'teamId': t.get('team_id'), 'won': t.get('won'),
+              'roundsWon': 0 if single else (t.get('rounds') or {}).get('won', 0),
+              'numPoints': (t.get('rounds') or {}).get('won', 0) if single else None,
               'mvp': (t.get('mvp') or {}).get('puuid')} for t in m.get('teams') or []]
     rkills = []
     for k in kills:

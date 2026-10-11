@@ -25,7 +25,7 @@ from discord.ext import commands
 
 from cogs.riot_api import RateLimiter
 from cogs.valo_live import MODE_RECENT, RiotLink, shard_from_env
-from cogs.valo_live_parse import eog_table, henrik_to_riot, mode_record, parse_match, recent_line
+from cogs.valo_live_parse import eog_table, henrik_to_riot, mode_record, parse_match, rank_of, recent_line
 from cogs.valo_parse import detail, mmr_summary, summarize
 
 log = logging.getLogger(__name__)
@@ -318,8 +318,12 @@ class ValoCog(commands.Cog):
                     rr = {}
                     if ((d.get('matchInfo') or {}).get('queueID') or '').lower() == 'competitive':
                         rr = await self.link.rr_changes(pu, self._live_mid)
+                    # 牌位沿用對局中查到的 mmr(match-details 非競技模式的 competitiveTier 都是 0)
+                    season = await self.link.active_season()
+                    tiers = {p: rank_of(c[1], season, self.content)['tier']
+                             for p, c in self._lookup_cache.items() if c and c[1]}
                     self.state['_eog_at'] = time.time()
-                    self._set(eog=eog_table(d, me, self._live_hidden, self.content, names, rr))
+                    self._set(eog=eog_table(d, me, self._live_hidden, self.content, names, rr, tiers))
                 elif self._eog_tries < EOG_TRIES:
                     return LIVE_POLL_MATCH
             self._live_mid, self._live_hidden, self._eog_tries = '', set(), 0
@@ -470,7 +474,12 @@ class ValoCog(commands.Cog):
         won = mine['won'] if mine else None
         color = COLOR_DRAW if won is None else (COLOR_WIN if won else COLOR_LOSS)
         two = len(e['teams']) == 2
-        score = f"　{e['teams'][0]['rounds']}:{e['teams'][1]['rounds']}" if two and e['rounds'] and len(e['rounds']) > 1 else ''
+        if two and len(e.get('rounds') or []) > 1:
+            score = f"　{e['teams'][0]['rounds']}:{e['teams'][1]['rounds']}"
+        elif two and e['teams'][0].get('points') is not None:
+            score = f"　{e['teams'][0]['points']}:{e['teams'][1]['points']}"
+        else:
+            score = ''
         emb = discord.Embed(title=f"{title}{score}　{e['queue']}・{_esc(e['map'])}", color=color)
         meta = [f"{e['length'] // 60} 分 {e['length'] % 60:02d} 秒"]
         if e.get('start'):

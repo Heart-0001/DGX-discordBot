@@ -194,8 +194,9 @@ function viewEog() {
     const rr = p.rr;
     const tier = rr && rr.after ? rr.after : p.tier;
     if (!tier && !rr) return '<span class="rank unranked"><small>未定級</small></span>';
-    const delta = rr && rr.earned != null ? `<small class="${rr.earned >= 0 ? 'good' : 'bad'}">${rr.earned >= 0 ? '+' : ''}${rr.earned}</small>` : '';
-    return `<span class="rank ${TIER_CLS(tier)}" title="${rr && rr.rrAfter != null ? `${rr.rrAfter} RR` : ''}">${tierImg(tier)}${delta}</span>`;
+    const delta = rr && rr.earned != null ? `<small class="${rr.earned >= 0 ? 'good' : 'bad'}">${rr.earned >= 0 ? '+' : ''}${rr.earned} RR</small>` : '';
+    const name = tier ? `<b>${esc(p.tierName || '')}</b>` : '<small>未定級</small>';
+    return `<span class="rank ${TIER_CLS(tier)}" title="${rr && rr.rrAfter != null ? `${rr.rrAfter} RR` : ''}">${tierImg(tier)}${name}${delta}</span>`;
   };
   const mk = (p) => (p.mk ? [3, 4, 5].map((n, i) => (p.mk[i] ? `<span class="chip mk${n}" title="${n === 5 ? 'ACE' : n + 'K'} ×${p.mk[i]}">${n === 5 ? 'ACE' : n + 'K'}${p.mk[i] > 1 ? `×${p.mk[i]}` : ''}</span>` : '')).join('') : '');
   const clutch = (p) => (p.clutch && p.clutch.length ? p.clutch.map((c) => `<span class="chip cl">${c}</span>`).join('') : '');

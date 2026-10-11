@@ -165,6 +165,7 @@ def eog_table(d: dict, me: str, hidden: set, content: dict, names: Optional[dict
             'score': st.get('score', 0), 'rounds': st.get('roundsPlayed', 0),
             'dmg': sum(r.get('damage', 0) for r in p.get('roundDamage') or []),
             'tier': p.get('competitiveTier') or (tiers or {}).get(pu) or 0, 'level': p.get('accountLevel'),
+            'tierName': (content.get('tiers', {}).get(str(p.get('competitiveTier') or (tiers or {}).get(pu) or 0)) or {}).get('name', ''),
             'mvp': pu == (tinfo.get(p.get('teamId')) or {}).get('mvp'),
         })
     out = []

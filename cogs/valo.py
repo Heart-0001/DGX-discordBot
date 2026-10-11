@@ -560,7 +560,8 @@ class ValoCog(commands.Cog):
                     notes.append(f"R{r['n'] + 1} {' '.join(parts)}")
             add_lines(emb, f'回合（藍 = 我方贏；💥爆炸 ✂️拆除）', [strip] + ([' / '.join(notes)] if notes else []))
         foot = f"MVP {_esc(names[e['matchMvp']]['agent'])}・" if e.get('matchMvp') in names else ''
-        emb.set_footer(text=foot + 'ACS 每回合分數・ADR 每回合傷害・KAST 有殺/助攻/存活/被換的回合比例・技能 C/Q/E/X 次數')
+        emb.set_footer(text=foot + ('ACS 每回合分數・ADR 每回合傷害・KAST 有殺/助攻/存活/被換的回合比例・' if rb else '')
+                       + '技能 C/Q/E/X 次數' + ('' if rb else '・單回合模式沒有 KAST/首殺/多殺/經濟'))
         return emb
 
     def _detail_embed(self, d: dict) -> discord.Embed:
@@ -886,14 +887,27 @@ class ValoCog(commands.Cog):
             res = s['score'] or '結束'
         else:
             res = '平手' if s['draw'] else ('勝利' if s['won'] else ('落敗' if s['won'] is False else '結束'))
-        mmr = await self.api.mmr(t['region'], t['name'], t['tag'], background=True) if s['queue'] == '競技' else None
-        rr = {}
+        # 牌位：HenrikDev 對戰資料裡非競技模式一律 0 →
+        #   玩家 PC 的 Riot Client 有登入：mmr 查全部 10 人(跟 Activity 同一來源)
+        #   沒有：至少用 HenrikDev 的 mmr 補被追蹤的這位(競技場順便拿 RR 變化)
+        riot = henrik_to_riot(m)
+        tiers, rr = {}, {}
+        mmr = await self.api.mmr(t['region'], t['name'], t['tag'], background=True)
         if mmr:
             ms_ = mmr_summary(mmr, self.content)
-            if isinstance(ms_['lastChange'], int):
+            tiers[puuid] = ms_['current']['id']
+            if s['queue'] == '競技' and isinstance(ms_['lastChange'], int):
                 rr[puuid] = {'earned': ms_['lastChange'], 'after': ms_['current']['id'], 'rrAfter': ms_['rr']}
+        if self.link and await self.link.token():
+            try:
+                pus = [p['subject'] for p in riot['players'] if p.get('subject')]
+                season, mmrs = await asyncio.gather(self.link.active_season(),
+                                                    asyncio.gather(*[self.link.mmr(p) for p in pus]))
+                tiers.update({p: rank_of(mm, season, self.content)['tier'] for p, mm in zip(pus, mmrs) if mm})
+            except Exception as e:
+                log.warning(f'🔫 追蹤：補牌位失敗 {e!r}')
         # 完整計分板(跟 Activity 結算同一套計算)；HenrikDev 資料不完整時退回一行摘要
-        e = eog_table(henrik_to_riot(m), puuid, set(), self.content, None, rr)
+        e = eog_table(riot, puuid, set(), self.content, None, rr, tiers)
         if e['teams']:
             emb = self._rich_embed(e, f"🔫 {_esc(t['name'])} 剛打完一場：{res}")
         else:

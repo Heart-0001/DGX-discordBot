@@ -18,13 +18,23 @@ for block in re.split(r'\n\s*-\s+', text):
     value = re.search(r'\bvalue:\s*"?([^"\n]+)"?', block)
     if name and value and 'domain' in block:
         cookies[name.group(1)] = value.group(1).strip()
-if not cookies:
-    print('沒讀到任何 cookie（Riot Client 沒登入？或 ssh 讀不到檔案）')
+# 新版 Riot Client：登入 session 是 psl.authorization.riot-client 的 refresh_token(OAuth)，不是 ssid
+psl = re.search(r'riot-client:\s*\n((?:\s{8,}.*\n?)+)', text)
+auth = {}
+if psl:
+    for key in ('refresh_token', 'id_token', 'is_dpop_bound', 'refresh_tokens_session_id'):
+        m = re.search(rf'\b{key}:\s*"?([^"\n]+)"?', psl.group(1))
+        if m:
+            auth[key] = m.group(1).strip()
+if not cookies and not auth.get('refresh_token'):
+    print('沒讀到 cookie 也沒讀到 refresh token（Riot Client 沒登入？沒勾保持登入？）')
     sys.exit(1)
-d = {'cookies': cookies, 'ssid': cookies.get('ssid', ''), 'imported_at': time.time()}
+d = {'cookies': cookies, 'ssid': cookies.get('ssid', ''), 'refresh_token': auth.get('refresh_token', ''),
+     'id_token': auth.get('id_token', ''), 'dpop': auth.get('is_dpop_bound', ''), 'imported_at': time.time()}
 tmp = OUT + '.tmp'
 with open(tmp, 'w', encoding='utf-8') as f:
     json.dump(d, f)
 os.chmod(tmp, 0o600)
 os.replace(tmp, OUT)
-print('已存到', OUT, '；cookie 名稱：', sorted(cookies), '；有 ssid：', bool(d['ssid']))
+print('已存到', OUT, '；cookie 名稱：', sorted(cookies), '；有 ssid：', bool(d['ssid']),
+      '；有 refresh_token：', bool(d['refresh_token']), '；dpop 綁定：', d['dpop'] or '?')

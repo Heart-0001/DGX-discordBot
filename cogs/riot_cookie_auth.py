@@ -26,6 +26,7 @@ RGPS = r'%LOCALAPPDATA%\Riot Games\Riot Client\Data\RiotGamesPrivateSettings.yam
 AUTHORIZE = ('https://auth.riotgames.com/authorize?redirect_uri=https%3A%2F%2Fplayvalorant.com%2Fopt_in'
              '&client_id=play-valorant-web-prod&response_type=token%20id_token&nonce=1&scope=account%20openid')
 UA = 'RiotClient/91.0.2.1870.3774 rso-auth (Windows;10;;Professional, x64)'
+TOKEN_URL = 'https://auth.riotgames.com/token'
 TOKEN_TTL = 50 * 60
 
 
@@ -96,25 +97,43 @@ class CookieAuth:
             return False
         self._retry_at = time.time() + 600
         d = _load()
-        if not d.get('ssid'):
+        if not d.get('ssid') and not d.get('refresh_token'):
             self.fail_reason = '沒有 cookie 檔'
             return False
         try:
-            async with self.http.get(AUTHORIZE, headers={'User-Agent': UA}, cookies={'ssid': d['ssid']},
-                                     allow_redirects=False, timeout=aiohttp.ClientTimeout(total=20)) as r:
-                loc = r.headers.get('Location', '')
-                new_ssid = r.cookies.get('ssid')
-                if r.status not in (302, 303) or 'access_token' not in loc:
-                    self.fail_reason = f'cookie 失效或被擋（HTTP {r.status}）'
-                    log.warning(f'🔫 小帳 cookie 登入失敗: {self.fail_reason}')
-                    return False
-            frag = parse_qs(urlparse(loc).fragment)
-            self.access = frag['access_token'][0]
-            id_token = (frag.get('id_token') or [''])[0]
-            if new_ssid:   # 續命：存新的 ssid
-                d['ssid'] = new_ssid.value
-                d['refreshed_at'] = time.time()
-                _save(d)
+            id_token = ''
+            if d.get('refresh_token'):
+                # 新版 Riot Client(2025+)：OAuth refresh token；回應會給新的 refresh token → 存回去(舊的作廢)
+                async with self.http.post(TOKEN_URL, headers={'User-Agent': UA},
+                                          data={'grant_type': 'refresh_token', 'refresh_token': d['refresh_token'],
+                                                'client_id': 'riot-client'},
+                                          timeout=aiohttp.ClientTimeout(total=20)) as r:
+                    body = await r.json(content_type=None)
+                    if r.status != 200 or not body.get('access_token'):
+                        self.fail_reason = f"refresh token 失效（HTTP {r.status} {body.get('error', '')}）"
+                        log.warning(f'🔫 小帳登入失敗: {self.fail_reason}')
+                        return False
+                self.access = body['access_token']
+                id_token = body.get('id_token') or d.get('id_token', '')
+                if body.get('refresh_token'):
+                    d['refresh_token'], d['refreshed_at'] = body['refresh_token'], time.time()
+                    _save(d)
+            else:
+                async with self.http.get(AUTHORIZE, headers={'User-Agent': UA}, cookies={'ssid': d['ssid']},
+                                         allow_redirects=False, timeout=aiohttp.ClientTimeout(total=20)) as r:
+                    loc = r.headers.get('Location', '')
+                    new_ssid = r.cookies.get('ssid')
+                    if r.status not in (302, 303) or 'access_token' not in loc:
+                        self.fail_reason = f'cookie 失效或被擋（HTTP {r.status}）'
+                        log.warning(f'🔫 小帳 cookie 登入失敗: {self.fail_reason}')
+                        return False
+                frag = parse_qs(urlparse(loc).fragment)
+                self.access = frag['access_token'][0]
+                id_token = (frag.get('id_token') or [''])[0]
+                if new_ssid:   # 續命：存新的 ssid
+                    d['ssid'] = new_ssid.value
+                    d['refreshed_at'] = time.time()
+                    _save(d)
             hdr = {'Authorization': f'Bearer {self.access}', 'User-Agent': UA}
             async with self.http.post('https://entitlements.auth.riotgames.com/api/token/v1', headers=hdr, json={},
                                       timeout=aiohttp.ClientTimeout(total=20)) as r:

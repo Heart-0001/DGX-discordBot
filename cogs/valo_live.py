@@ -21,6 +21,7 @@ from typing import Optional
 import aiohttp
 
 from cogs.lol import PcLink
+from cogs.riot_cookie_auth import CookieAuth
 from cogs.valo_live_parse import match_summaries
 
 log = logging.getLogger(__name__)
@@ -46,6 +47,7 @@ class RiotLink:
         self.pc = PcLink(host, '')
         self.shard = shard
         self.http = http
+        self.alt = CookieAuth(http, host)   # 小帳 cookie：PC 沒開時查牌位/對戰紀錄用(查不了「自己正在打的對局」)
         self.puuid = ''
         self._tok: Optional[tuple[str, str]] = None   # (access, entitlement)
         self._tok_at = 0.0
@@ -88,23 +90,40 @@ class RiotLink:
         return self._ver[0]
 
     # ── 打 Riot 伺服器 ──
-    async def _req(self, method: str, url: str, body=None, retry: bool = True, tries: int = RETRY_429):
-        if not await self.token():
+    async def token_any(self) -> bool:
+        """資料查詢用：玩家 PC 的 client 有登入就用它，沒有就用小帳 cookie。"""
+        return await self.token() or await self.alt.login()
+
+    async def _creds(self, allow_alt: bool) -> Optional[tuple[str, str]]:
+        if await self.token():
+            return self._tok
+        if allow_alt and await self.alt.login():
+            return self.alt.access, self.alt.entitlement
+        return None
+
+    async def _req(self, method: str, url: str, body=None, retry: bool = True, tries: int = RETRY_429,
+                   allow_alt: bool = True):
+        creds = await self._creds(allow_alt)
+        if not creds:
             return None
-        headers = {'Authorization': f'Bearer {self._tok[0]}', 'X-Riot-Entitlements-JWT': self._tok[1],
+        using_alt = creds is not self._tok
+        headers = {'Authorization': f'Bearer {creds[0]}', 'X-Riot-Entitlements-JWT': creds[1],
                    'X-Riot-ClientPlatform': PLATFORM, 'X-Riot-ClientVersion': await self.version()}
         try:
             async with self.http.request(method, url, json=body, headers=headers,
                                          timeout=aiohttp.ClientTimeout(total=15)) as r:
                 if r.status in (400, 401) and retry:      # token 過期或客戶端重開過
-                    self._tok = None
-                    return await self._req(method, url, body, retry=False)
+                    if using_alt:
+                        await self.alt.login(force=True)
+                    else:
+                        self._tok = None
+                    return await self._req(method, url, body, retry=False, allow_alt=allow_alt)
                 if r.status == 404:
                     return None
                 if r.status == 429 and tries > 0:
                     ra = r.headers.get('Retry-After')
                     await asyncio.sleep(min(10, float(ra)) if ra and ra.replace('.', '').isdigit() else 2.0)
-                    return await self._req(method, url, body, retry, tries - 1)
+                    return await self._req(method, url, body, retry, tries - 1, allow_alt)
                 if r.status != 200:
                     log.warning(f'🔫 Riot {r.status} {url.split("pvp.net")[-1].split("/players/")[0]}')
                     return None
@@ -114,7 +133,8 @@ class RiotLink:
             return None
 
     def glz(self, path: str):
-        return self._req('GET', f'https://glz-{self.shard}-1.{self.shard}.a.pvp.net{path}')
+        # 對局(glz)只有本人的 client 查得到自己那場，小帳查別人一律 403 → 不用小帳
+        return self._req('GET', f'https://glz-{self.shard}-1.{self.shard}.a.pvp.net{path}', allow_alt=False)
 
     def pd(self, path: str, method: str = 'GET', body=None):
         return self._req(method, f'https://pd.{self.shard}.a.pvp.net{path}', body)

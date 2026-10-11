@@ -220,10 +220,25 @@ class ValoCog(commands.Cog):
         self.link = RiotLink(os.getenv('LOL_SSH_HOST', 'pc'), shard_from_env(), self._http)
         self._task = asyncio.ensure_future(self._track_loop())
         self._live_task = asyncio.ensure_future(self._live_loop())
+        self._alt_task = asyncio.ensure_future(self._alt_loop())
         log.info(f'🔫 Valorant 模組：API {"已啟用" if self.api else "未設定 HENRIK_API_KEY"}，'
                  f'追蹤 {len(self.tracked)} 人')
 
+    async def _alt_loop(self):
+        """小帳 cookie：啟動時登一次(看 log 確認分區)，之後每 12 小時換一次 token 讓 ssid 續命。"""
+        await self.bot.wait_until_ready()
+        while True:
+            ok = await self.link.alt.login(force=True) if self.link else False
+            if ok:
+                log.info(f'🔫 小帳 cookie 登入成功：分區 {self.link.alt.shard or "?"}（PC 關機時用它查牌位、對戰紀錄）')
+            else:
+                log.warning(f'🔫 小帳 cookie 登入失敗：{self.link.alt.fail_reason if self.link else "?"}'
+                            '（PC 關機時只剩 HenrikDev；重新用 scripts/import_alt_cookie.py 匯入）')
+            await asyncio.sleep(12 * 3600)
+
     async def cog_unload(self):
+        if getattr(self, '_alt_task', None):
+            self._alt_task.cancel()
         if self._task:
             self._task.cancel()
         if self._live_task:
@@ -898,7 +913,7 @@ class ValoCog(commands.Cog):
             tiers[puuid] = ms_['current']['id']
             if s['queue'] == '競技' and isinstance(ms_['lastChange'], int):
                 rr[puuid] = {'earned': ms_['lastChange'], 'after': ms_['current']['id'], 'rrAfter': ms_['rr']}
-        if self.link and await self.link.token():
+        if self.link and await self.link.token_any():
             try:
                 pus = [p['subject'] for p in riot['players'] if p.get('subject')]
                 season, mmrs = await asyncio.gather(self.link.active_season(),

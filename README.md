@@ -140,7 +140,11 @@ Discord ──→ https://lyrics.你的網域 ──(Cloudflare Tunnel)──→
    # VALO_SHARD=ap           # 選填：/valo-live 用的 Riot 伺服器分區（台灣 ap）
    # RIOT_PLATFORM=tw2  RIOT_REGIONAL=sea  RIOT_ACCOUNT_REGION=asia   # 選填：伺服器區域
    ```
-3. 重啟 bot。英雄、裝備、特務、牌位圖示與出裝統計第一次用到時才下載，快取在 `data/lol_assets/`、`data/valo_assets/`。
+3.（選用）Valorant 小帳 cookie：玩家 PC 關機時 bot 仍能用 Riot 內部端點查牌位、對戰紀錄（不能查進行中對局）。
+   建一隻只給 bot 用的 Riot 帳號，在 PC 的 Riot Client 登入（勾「保持登入」）並開一次 Valorant 進大廳，然後在 DGX 執行
+   `ssh pc 'type "%LOCALAPPDATA%\Riot Games\Riot Client\Data\RiotGamesPrivateSettings.yaml"' | venv/bin/python scripts/import_alt_cookie.py`
+   會把 ssid 存成 `data/riot_alt_cookie.json`（權限 600、不進 git）。bot 每 12 小時用它換 token 並存回新的 ssid，所以幾乎不會過期；失效時 log 會提示重新匯入。
+4. 重啟 bot。英雄、裝備、特務、牌位圖示與出裝統計第一次用到時才下載，快取在 `data/lol_assets/`、`data/valo_assets/`。
 
 修改歌詞畫面前端後重新 build（不用重啟 bot，伺服器直接讀 `activity/dist/`）：
 ```bash

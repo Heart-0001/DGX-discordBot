@@ -25,7 +25,7 @@ from discord.ext import commands
 
 from cogs.riot_api import RateLimiter
 from cogs.valo_live import MODE_RECENT, RiotLink, shard_from_env
-from cogs.valo_live_parse import eog_table, henrik_to_riot, mode_record, parse_match, rank_of, recent_line
+from cogs.valo_live_parse import eog_table, henrik_to_riot, mode_record, parse_match, rank_of, recent_line, riot_summarize
 from cogs.valo_parse import detail, mmr_summary, summarize
 
 log = logging.getLogger(__name__)
@@ -730,11 +730,101 @@ class ValoCog(commands.Cog):
     @app_commands.describe(player='玩家，例如 名字#1234')
     async def valo(self, interaction: discord.Interaction, player: str):
         await interaction.response.defer(thinking=True)
+        rid = parse_rid(player)
+        if not rid:
+            await interaction.followup.send('❌ 格式是 `名字#tag`，例如 `名字#1234`')
+            return
+        # 小帳優先(Riot 直查，資料完整、沒額度)；不行才用 HenrikDev
+        acc = await self._resolve_puuid(rid)
+        if acc and self.link and await self.link.token_any():
+            try:
+                r = await self._riot_profile(acc)
+            except Exception as e:
+                log.warning(f'🔫 /valo Riot 直查失敗，改用 HenrikDev: {e!r}')
+                r = None
+            if r:
+                await interaction.followup.send(embed=r[0], view=r[1])
+                return
         acc = await self._resolve(interaction, player)
         if not acc:
             return
         emb, view = await self._profile(acc)
         await interaction.followup.send(embed=emb, view=view)
+
+    async def _resolve_puuid(self, rid: tuple[str, str]) -> Optional[dict]:
+        """名字#tag → {'name','tag','puuid'}。只能用 HenrikDev：Riot 官方 API 給的 puuid 是依 API key 加密過的，
+        跟 Valorant 內部端點用的不同(2026-10-11 實測)，Riot 內部也沒有名字→puuid 的端點。"""
+        if self.api:
+            a = await self.api.account(*rid)
+            if a and a.get('puuid'):
+                return {'name': a['name'], 'tag': a['tag'], 'puuid': a['puuid']}
+        return None
+
+    async def _riot_eog(self, d: dict, puuid: str, hidden: Optional[set] = None, want_tiers: bool = True) -> dict:
+        """Riot match-details → eog_table：補名字(name-service)、10 人牌位(mmr)、競技場 RR 變化。"""
+        pus = [p['subject'] for p in d.get('players') or [] if p.get('subject')]
+        names, season = await asyncio.gather(self.link.names(pus), self.link.active_season())
+        tiers, rr = {}, {}
+        if want_tiers:
+            mmrs = await asyncio.gather(*[self.link.mmr(p) for p in pus])
+            tiers = {p: rank_of(mm, season, self.content)['tier'] for p, mm in zip(pus, mmrs) if mm}
+        if ((d.get('matchInfo') or {}).get('queueID') or '').lower() == 'competitive':
+            rr = await self.link.rr_changes(pus, (d.get('matchInfo') or {}).get('matchId', ''))
+        return eog_table(d, puuid, hidden or set(), self.content, names, rr, tiers)
+
+    async def _riot_profile(self, acc: dict) -> Optional[tuple[discord.Embed, discord.ui.View]]:
+        """/valo 的 Riot 直查版：牌位(mmr)、上一場 RR、近 5 場(match-details)。拿不到任何東西回 None。"""
+        pu = acc['puuid']
+        season, mmr, hist = await asyncio.gather(
+            self.link.active_season(), self.link.mmr(pu),
+            self.link.pd(f'/match-history/v1/history/{pu}?startIndex=0&endIndex=5'))
+        mids = [x['MatchID'] for x in (hist or {}).get('History') or [] if x.get('MatchID')]
+        if not mmr and not mids:
+            return None
+        rank = rank_of(mmr, season, self.content)
+        cu, *details = await asyncio.gather(
+            self.link.pd(f'/mmr/v1/players/{pu}/competitiveupdates?startIndex=0&endIndex=1&queue=competitive'),
+            *[self.link._paced(f'/match-details/v1/matches/{m}') for m in mids])
+        last = ((cu or {}).get('Matches') or [{}])[0]
+        sums, level = [], None
+        for d in details:
+            if not d:
+                continue
+            e = eog_table(d, pu, set(), self.content)
+            s_ = riot_summarize(e, pu)
+            if s_:
+                sums.append(s_)
+                level = level or s_.get('level')
+        emb = discord.Embed(title=f"{_esc(acc['name'])}#{_esc(acc['tag'])}", color=0xFF4655,
+                            description=f"帳號等級 {level or '?'}・伺服器 {self.link.shard.upper()}")
+        if rank['tier']:
+            ch = f"（上一場 {last['RankedRatingEarned']:+d}）" if last.get('SeasonID') == season and isinstance(last.get('RankedRatingEarned'), int) else ''
+            val = f"**{_esc(rank['name'])}**　{rank['rr']} RR{ch}"
+            if rank['games']:
+                val += f"\n本季 {rank['wins']}勝{rank['games'] - rank['wins']}敗 {rank['wr']}%"
+            emb.add_field(name='目前牌位', value=val, inline=True)
+        else:
+            need = max(0, (rank.get('total') or 0) - rank['games'])
+            emb.add_field(name='目前牌位', value='未定級' + (f'\n還要 {need} 場定級' if need else ''), inline=True)
+        if rank['peak'] and rank['peak'] > rank['tier']:
+            emb.add_field(name='歷史最高', value=_esc(rank['peakName']), inline=True)
+        icon = self._tier_icon(rank['tier'])
+        if icon:
+            emb.set_thumbnail(url=icon)
+        if sums:
+            w = sum(1 for s_ in sums if s_['won'] and not s_.get('ffa'))
+            emb.add_field(name=f'最近 {len(sums)} 場（{w} 勝）', inline=False,
+                          value='\n'.join(self._match_line(s_) for s_ in sums)[:1024])
+            std = [s_ for s_ in sums if s_.get('acs') is not None]
+            if std:
+                kd = sum(s_['k'] for s_ in std) / max(1, sum(s_['d'] for s_ in std))
+                emb.set_footer(text=f"近 {len(std)} 場(不含單回合模式)平均 ACS {sum(s_['acs'] for s_ in std) // len(std)}・"
+                                    f"K/D {kd:.2f}・爆頭 {sum(s_['hs'] for s_ in std) // len(std)}%・資料直接來自 Riot")
+            else:
+                emb.set_footer(text='資料直接來自 Riot')
+        else:
+            emb.add_field(name='最近對戰', value='沒有資料', inline=False)
+        return emb, self._select(self.link.shard, pu, sums)
 
     @track.command(name='add', description='追蹤玩家：打完一場自動把戰績發到這個頻道')
     @app_commands.describe(player='玩家，例如 名字#1234')
@@ -820,9 +910,15 @@ class ValoCog(commands.Cog):
             return
         _, _, region, puuid = cid.split(':', 3)
         values = (interaction.data or {}).get('values') or []
-        if not values or not self.api:
+        if not values or not (self.api or self.link):
             return
         await interaction.response.defer(ephemeral=True, thinking=True)
+        if self.link and await self.link.token_any():
+            d = await self.link.pd(f'/match-details/v1/matches/{values[0]}')
+            if d and d.get('players'):
+                e = await self._riot_eog(d, puuid)
+                await interaction.followup.send(embed=self._rich_embed(e, '🔫 單場詳細'), ephemeral=True)
+                return
         m = await self.api.match(region, values[0])
         if not m:
             await interaction.followup.send('❌ 拿不到這場的資料（可能 API 額度暫時用完）', ephemeral=True)
@@ -853,6 +949,14 @@ class ValoCog(commands.Cog):
         t = self.tracked.get(puuid)
         if not t:
             return
+        # 小帳優先：Riot 的 match-history 比 HenrikDev 快(打完幾秒就有)
+        if self.link and await self.link.token_any():
+            hist = await self.link._paced(f'/match-history/v1/history/{puuid}?startIndex=0&endIndex=3')
+            if hist is not None:
+                await self._check_one_riot(t, puuid, hist)
+                return
+        if not self.api:
+            return
         # size=1 實測會拿到舊資料(2026-10-09：最新一場只出現在 size≥3)→ 抓 3 場自己比
         ms = await self.api.matches(t['region'], t['name'], t['tag'], 3, background=True, ttl=30)
         if not ms:
@@ -877,6 +981,22 @@ class ValoCog(commands.Cog):
                 t['last'] = m['metadata']['match_id']
                 self._save_tracked()
 
+    async def _check_one_riot(self, t: dict, puuid: str, hist: dict):
+        items = sorted((x for x in hist.get('History') or [] if x.get('MatchID')), key=lambda x: x.get('GameStartTime') or 0)
+        ids = [x['MatchID'] for x in items]
+        if not ids or ids[-1] == t.get('last'):
+            return
+        new = ids[ids.index(t['last']) + 1:] if t.get('last') in ids else ids[-1:]
+        log.info(f"🔫 追蹤 {t['name']}（Riot）：新場次 {len(new)} 場 {[m[:8] for m in new]}")
+        for mid in new:
+            d = await self.link._paced(f'/match-details/v1/matches/{mid}')
+            if not d or not (d.get('matchInfo') or {}).get('isCompleted', True):
+                log.info(f"🔫 追蹤 {t['name']}：{mid[:8]} 還沒結算，下次再查")
+                return
+            if await self._post_match(t, puuid, riot=d):
+                t['last'] = mid
+                self._save_tracked()
+
     async def _track_now(self, puuid: str, match_id: str):
         """本人(Activity 看到的對局)剛打完 → 不等輪到，每 20 秒查一次 HenrikDev，最多 10 分鐘。"""
         if puuid not in self.tracked or not self.api:
@@ -890,11 +1010,27 @@ class ValoCog(commands.Cog):
                 log.warning(f'🔫 追蹤(即時)例外: {e!r}')
             await asyncio.sleep(20)
 
-    async def _post_match(self, t: dict, puuid: str, m: dict) -> bool:
-        s = summarize(m, puuid, self.content)
+    async def _post_match(self, t: dict, puuid: str, m: Optional[dict] = None, riot: Optional[dict] = None) -> bool:
+        """賽後貼文。riot = Riot match-details(小帳查的，優先)；m = HenrikDev v4(退路)。"""
         chs = [c for c in (self.bot.get_channel(cid) for cid in self._channels(t).values()) if c]
+        if riot is not None:
+            mid = (riot.get('matchInfo') or {}).get('matchId', '')
+            e = await self._riot_eog(riot, puuid)
+            s = riot_summarize(e, puuid)
+        else:
+            mid = m['metadata']['match_id']
+            s = summarize(m, puuid, self.content)
+            # 牌位：HenrikDev 對戰資料裡非競技模式一律 0 → 小帳/PC 有 token 就查 10 人 mmr，否則至少補被追蹤的這位
+            tiers, rr = {}, {}
+            mmr = await self.api.mmr(t['region'], t['name'], t['tag'], background=True) if self.api else None
+            if mmr:
+                ms_ = mmr_summary(mmr, self.content)
+                tiers[puuid] = ms_['current']['id']
+                if s and s['queue'] == '競技' and isinstance(ms_['lastChange'], int):
+                    rr[puuid] = {'earned': ms_['lastChange'], 'after': ms_['current']['id'], 'rrAfter': ms_['rr']}
+            e = eog_table(henrik_to_riot(m), puuid, set(), self.content, None, rr, tiers)
         if not s or not chs:
-            log.warning(f"🔫 追蹤 {t['name']}：跳過 {m['metadata']['match_id'][:8]}"
+            log.warning(f"🔫 追蹤 {t['name']}：跳過 {mid[:8]}"
                         f"（{'找不到這位玩家的資料' if not s else '頻道不存在 ' + str(self._channels(t))}）")
             return bool(chs)   # 玩家資料真的沒有就不要一直重發；頻道沒了則留著下次再試
         color = COLOR_DRAW if s['draw'] or s['won'] is None else (COLOR_WIN if s['won'] else COLOR_LOSS)
@@ -902,27 +1038,6 @@ class ValoCog(commands.Cog):
             res = s['score'] or '結束'
         else:
             res = '平手' if s['draw'] else ('勝利' if s['won'] else ('落敗' if s['won'] is False else '結束'))
-        # 牌位：HenrikDev 對戰資料裡非競技模式一律 0 →
-        #   玩家 PC 的 Riot Client 有登入：mmr 查全部 10 人(跟 Activity 同一來源)
-        #   沒有：至少用 HenrikDev 的 mmr 補被追蹤的這位(競技場順便拿 RR 變化)
-        riot = henrik_to_riot(m)
-        tiers, rr = {}, {}
-        mmr = await self.api.mmr(t['region'], t['name'], t['tag'], background=True)
-        if mmr:
-            ms_ = mmr_summary(mmr, self.content)
-            tiers[puuid] = ms_['current']['id']
-            if s['queue'] == '競技' and isinstance(ms_['lastChange'], int):
-                rr[puuid] = {'earned': ms_['lastChange'], 'after': ms_['current']['id'], 'rrAfter': ms_['rr']}
-        if self.link and await self.link.token_any():
-            try:
-                pus = [p['subject'] for p in riot['players'] if p.get('subject')]
-                season, mmrs = await asyncio.gather(self.link.active_season(),
-                                                    asyncio.gather(*[self.link.mmr(p) for p in pus]))
-                tiers.update({p: rank_of(mm, season, self.content)['tier'] for p, mm in zip(pus, mmrs) if mm})
-            except Exception as e:
-                log.warning(f'🔫 追蹤：補牌位失敗 {e!r}')
-        # 完整計分板(跟 Activity 結算同一套計算)；HenrikDev 資料不完整時退回一行摘要
-        e = eog_table(riot, puuid, set(), self.content, None, rr, tiers)
         if e['teams']:
             emb = self._rich_embed(e, f"🔫 {_esc(t['name'])} 剛打完一場：{res}")
         else:
@@ -935,7 +1050,7 @@ class ValoCog(commands.Cog):
             try:
                 await ch.send(embed=emb, view=self._select(t['region'], puuid, [s]))
                 ok = True
-                log.info(f"🔫 追蹤 {t['name']}：{m['metadata']['match_id'][:8]} 已發到 #{ch.name}")
+                log.info(f"🔫 追蹤 {t['name']}：{mid[:8]} 已發到 #{ch.name}")
             except discord.HTTPException as e:
                 log.warning(f'🔫 追蹤通知發送失敗 <#{ch.id}>: {e!r}')
         return ok

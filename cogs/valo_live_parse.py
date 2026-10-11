@@ -179,7 +179,7 @@ def eog_table(d: dict, me: str, hidden: set, content: dict, names: Optional[dict
         allp = sorted([p for t in out for p in t['players']], key=lambda x: -x['score'])
         out = [{'mine': True, 'won': None, 'rounds': 0, 'players': allp}]
     pod = info.get('gamePodId') or ''
-    return {'queue': QUEUE_ZH.get(queue, queue or '?'), 'map': map_name(info.get('mapId') or '', content),
+    return {'matchId': info.get('matchId') or '', 'queue': QUEUE_ZH.get(queue, queue or '?'), 'map': map_name(info.get('mapId') or '', content),
             'length': (info.get('gameLengthMillis') or 0) // 1000, 'start': (info.get('gameStartMillis') or 0) // 1000,
             'teams': out, 'rounds': extras['rounds'], 'myTeam': my_team,
             'ranked': bool(info.get('isRanked')), 'early': bool(info.get('isEarlyCompletion')),
@@ -411,4 +411,39 @@ def henrik_to_riot(m: dict) -> dict:
                       'gameVersion': meta.get('game_version') or '', 'gamePodId': meta.get('cluster') or ''},
         'players': players, 'teams': teams, 'roundResults': rr, 'kills': rkills,
         'matchMvp': (meta.get('mvp') or {}).get('puuid') or '',
+    }
+
+
+def riot_summarize(e: dict, puuid: str) -> Optional[dict]:
+    """eog_table 的輸出 → 跟 valo_parse.summarize 同形狀的單場摘要(/valo 清單與選單用)。"""
+    me = next((p for t in e.get('teams') or [] for p in t['players'] if p['puuid'] == puuid), None)
+    if not me:
+        return None
+    mine = next((t for t in e['teams'] if t['mine']), None)
+    teams = e['teams']
+    ffa = e.get('queue') == QUEUE_ZH['deathmatch']
+    roundbased = me['rounds'] > 1
+    if ffa:
+        order = sorted((p for t in teams for p in t['players']), key=lambda p: -p['score'])
+        place = next((i + 1 for i, p in enumerate(order) if p['puuid'] == puuid), None)
+        won, draw, score = place == 1, False, f'第 {place} 名' if place else ''
+    else:
+        won = mine['won'] if mine else None
+        other = next((t for t in teams if t is not mine), None)
+        if roundbased:
+            score = f"{mine['rounds']}:{other['rounds']}" if mine and other else ''
+            draw = bool(mine and other) and mine['rounds'] == other['rounds']
+        else:
+            score = f"{mine.get('points')}:{other.get('points')}" if mine and other and mine.get('points') is not None else ''
+            draw = False
+    from datetime import datetime, timezone
+    return {
+        'matchId': e.get('matchId', ''), 'won': won, 'draw': draw, 'ffa': ffa, 'score': score,
+        'map': e.get('map', '?'), 'queue': e.get('queue', '?'),
+        'started': datetime.fromtimestamp(e['start'], tz=timezone.utc) if e.get('start') else None,
+        'lengthMin': round((e.get('length') or 0) / 60), 'mvp': me['mvp'] and not ffa,   # 死鬥每人一隊，mvp 沒意義
+        'agent': me['agent'], 'agentId': me['agentId'], 'k': me['k'], 'd': me['d'], 'a': me['a'],
+        'acs': round(me['score'] / me['rounds']) if roundbased and not ffa else None,
+        'adr': round(me['dmg'] / me['rounds']) if roundbased else None,
+        'hs': me['hs'], 'fb': me['fb'], 'tier': me['tier'], 'level': me.get('level'),
     }

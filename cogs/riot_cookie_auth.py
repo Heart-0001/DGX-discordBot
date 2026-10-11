@@ -60,6 +60,7 @@ class CookieAuth:
         self._at = 0.0
         self.fail_reason = ''
         self._retry_at = 0.0   # 失敗後 10 分鐘內不再打 auth 伺服器(每個查詢都會問一次)
+        self._lock = asyncio.Lock()   # refresh token 用一次就換新 → 同時多個請求一起登入會互相作廢，要排隊
 
     @property
     def ok(self) -> bool:
@@ -120,6 +121,12 @@ class CookieAuth:
     async def login(self, force: bool = False) -> bool:
         if self.ok and not force:
             return True
+        async with self._lock:
+            if self.ok and not force:   # 排隊時別人已經登好了
+                return True
+            return await self._login_locked(force)
+
+    async def _login_locked(self, force: bool) -> bool:
         if time.time() < self._retry_at and not force:
             return False
         self._retry_at = time.time() + 600

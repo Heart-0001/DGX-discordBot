@@ -47,7 +47,7 @@ class RiotLink:
         self.pc = PcLink(host, '')
         self.shard = shard
         self.http = http
-        self.alt = CookieAuth(http, host)   # 小帳 cookie：PC 沒開時查牌位/對戰紀錄用(查不了「自己正在打的對局」)
+        self.alt = CookieAuth(http, host)   # 小帳：除了「本人正在打的對局」(glz)以外的查詢都用它；沒有才用 PC 的 client
         self.puuid = ''
         self._tok: Optional[tuple[str, str]] = None   # (access, entitlement)
         self._tok_at = 0.0
@@ -91,14 +91,14 @@ class RiotLink:
 
     # ── 打 Riot 伺服器 ──
     async def token_any(self) -> bool:
-        """資料查詢用：玩家 PC 的 client 有登入就用它，沒有就用小帳 cookie。"""
-        return await self.token() or await self.alt.login()
+        """資料查詢用：一律先用小帳(使用者決定，2026-10-11)，小帳不能用才退回玩家 PC 的 client。"""
+        return await self.alt.login() or await self.token()
 
     async def _creds(self, allow_alt: bool) -> Optional[tuple[str, str]]:
-        if await self.token():
-            return self._tok
         if allow_alt and await self.alt.login():
             return self.alt.access, self.alt.entitlement
+        if await self.token():
+            return self._tok
         return None
 
     async def _req(self, method: str, url: str, body=None, retry: bool = True, tries: int = RETRY_429,

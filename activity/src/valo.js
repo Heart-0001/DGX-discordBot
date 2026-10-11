@@ -182,22 +182,61 @@ function viewEog() {
   const e = state.eog;
   const mine = e.teams.find((t) => t.mine);
   const res = mine && mine.won != null ? (mine.won ? '勝利' : '落敗') : '結束';
-  const score = e.teams.length === 2 ? `${e.teams[0].rounds} : ${e.teams[1].rounds}` : '';
+  const two = e.teams.length === 2;
+  const score = two ? `${e.teams[0].rounds} : ${e.teams[1].rounds}` : '';
   // 回合制跟遊戲內 TAB 一樣顯示 ACS / ADR(每回合平均)；團隊死鬥只有 1 回合 → 顯示整場總分
   const rb = e.teams.some((t) => t.players.some((p) => p.rounds > 1));
+  const byId = {};
+  e.teams.forEach((t) => t.players.forEach((p) => { byId[p.puuid] = p; }));
+  const tierName = (p) => (p.rr && p.rr.after ? '' : '');
+  const rankCell = (p) => {
+    const rr = p.rr;
+    const tier = rr && rr.after ? rr.after : p.tier;
+    if (!tier && !rr) return '';
+    const delta = rr && rr.earned != null ? `<small class="${rr.earned >= 0 ? 'good' : 'bad'}">${rr.earned >= 0 ? '+' : ''}${rr.earned}</small>` : '';
+    return `<span class="rank ${TIER_CLS(tier)}" title="${rr && rr.rrAfter != null ? `${rr.rrAfter} RR` : ''}">${tierImg(tier)}${delta}</span>`;
+  };
+  const mk = (p) => (p.mk ? [3, 4, 5].map((n, i) => (p.mk[i] ? `<span class="chip mk${n}" title="${n === 5 ? 'ACE' : n + 'K'} ×${p.mk[i]}">${n === 5 ? 'ACE' : n + 'K'}${p.mk[i] > 1 ? `×${p.mk[i]}` : ''}</span>` : '')).join('') : '');
+  const clutch = (p) => (p.clutch && p.clutch.length ? p.clutch.map((c) => `<span class="chip cl">${c}</span>`).join('') : '');
+  const tags = (p) => `${p.party ? badge(`組隊${p.party}`, 'party') : ''}${p.mvp ? badge('MVP', 'gold') : ''}${p.platform && p.platform !== 'pc' ? badge('主機', '') : ''}${p.afk ? badge(`AFK ${p.afk}`, 'bad') : ''}`;
   const rows = (t) => t.players.map((p) => `<div class="erow${p.me ? ' me' : ''}">
       <span class="c-champ">${agentImg(p, 'champ')}</span>
-      <span class="c-name">${nameHtml(p)}${p.mvp ? ' <span class="badge gold">MVP</span>' : ''}<small class="cn">${esc(p.agent)}</small></span>
-      <span class="c-rank">${p.tier ? `<span class="rank ${TIER_CLS(p.tier)}">${tierImg(p.tier)}</span>` : ''}</span>
+      <span class="c-name">${nameHtml(p)}${tags(p)}<small class="cn">${esc(p.agent)}${p.level ? ` · Lv${p.level}` : ''}</small></span>
+      <span class="c-rank">${rankCell(p)}</span>
       <span class="c-kda"><span class="kda"><b>${p.k}</b>/<b class="d">${p.d}</b>/<b>${p.a}</b></span></span>
       <span class="c-score" title="${rb ? 'ACS：平均每回合戰鬥分數' : '整場戰鬥分數'}">${num(rb ? Math.round(p.score / p.rounds) : p.score)}</span>
       <span class="c-dmg" title="${rb ? 'ADR：平均每回合傷害' : '整場傷害'}">${num(rb ? Math.round(p.dmg / p.rounds) : p.dmg)}</span>
+      <span class="c-hs ${cls3(p.hs, 25, 10)}" title="爆頭率">${p.hs}%</span>
+      <span class="c-kast ${cls3(p.kast, 75, 55)}" title="KAST：有擊殺／助攻／存活／被隊友換掉的回合比例">${p.kast == null ? '<span class="dim">—</span>' : `${p.kast}%`}</span>
+      <span class="c-fb" title="首殺 / 被首殺">${p.mk ? `<b>${p.fb}</b><span class="dim">/</span><span class="d">${p.fd}</span>` : '<span class="dim">—</span>'}</span>
+      <span class="c-mk" title="多殺與 Clutch">${mk(p)}${clutch(p)}</span>
+      <span class="c-econ" title="平均每回合裝備值・最常用武器">${p.econ ? `${(p.econ / 1000).toFixed(1)}k` : ''}${p.weapon ? `<small>${esc(p.weapon)}</small>` : ''}</span>
+      <span class="c-ab" title="技能施放 C / Q / E / X">${p.casts && p.casts.some((c) => c) ? p.casts.join('<span class="dim">/</span>') : ''}</span>
     </div>`).join('');
-  const head = `<div class="erow lhead"><span></span><span>玩家</span><span></span><span>K/D/A</span><span>${rb ? 'ACS' : '戰鬥分數'}</span><span>${rb ? 'ADR' : '傷害'}</span></div>`;
+  const head = `<div class="erow lhead"><span></span><span>玩家</span><span>牌位</span><span>K/D/A</span><span>${rb ? 'ACS' : '分數'}</span><span>${rb ? 'ADR' : '傷害'}</span><span>HS%</span><span>KAST</span><span>首殺</span><span>多殺</span><span>經濟</span><span>技能</span></div>`;
   const blocks = e.teams.map((t) => `<div class="team ${t.mine ? 'ally' : 'enemy'}${t.won ? ' won' : ''}">
-      <div class="team-h"><span>${e.teams.length === 1 ? '全部玩家' : t.mine ? '我方' : '敵方'}</span><span>${t.won == null ? '' : t.won ? '勝' : '敗'}</span></div>${head}${rows(t)}</div>`).join('');
+      <div class="team-h"><span>${!two ? '全部玩家' : t.mine ? '我方' : '敵方'}</span><span>${t.won == null ? '' : t.won ? '勝' : '敗'}</span></div>${head}${rows(t)}</div>`).join('');
+  // 回合條：藍 = 我方贏；圖示 = 回合怎麼結束；下面列出 Riot 標的 Ceremony(Clutch / Ace / …)
+  const glyph = { Detonate: '💥', Defuse: '✂️', Surrendered: '🏳️' };
+  const rounds = (e.rounds || []);
+  let strip = '';
+  if (rounds.length > 1 && e.myTeam) {
+    const chips = rounds.map((r) => {
+      const win = r.win === e.myTeam;
+      const bits = [];
+      if (r.ceremony) bits.push(r.ceremony);
+      if (r.site) bits.push(`${r.site} 包${byId[r.planter] ? `（${byId[r.planter].agent}）` : ''}`);
+      if (byId[r.defuser]) bits.push(`拆包 ${byId[r.defuser].agent}`);
+      if (byId[r.fb]) bits.push(`首殺 ${byId[r.fb].agent}`);
+      return `<span class="rchip ${win ? 'w' : 'l'}${r.ceremony ? ' cer' : ''}" title="R${r.n + 1}　${bits.join('・')}">${glyph[r.code] || ''}<small>${r.n + 1}</small></span>`;
+    }).join('');
+    const notes = rounds.filter((r) => r.ceremony).map((r) => `<span class="rnote">R${r.n + 1} ${esc(r.ceremony)}${r.site ? ` ${esc(r.site)}包` : ''}</span>`).join('');
+    strip = `<div class="rounds"><div class="rstrip">${chips}</div>${notes ? `<div class="rnotes">${notes}</div>` : ''}</div>`;
+  }
+  const meta = [mmss(e.length), e.start ? ago(e.start * 1000) : '', e.server ? `伺服器 ${esc(e.server)}` : '', e.version ? `v${esc(e.version)}` : '',
+    e.ranked ? '積分' : '', e.early ? '提前結束' : '', byId[e.matchMvp] ? `全場 MVP ${esc(byId[e.matchMvp].agent)}` : ''].filter(Boolean);
   return `${header(`<span class="lt-title eb-title">${res}</span>`, score ? `<span class="score">${score}</span>` : '')}
-    <div class="lol-body eog-body"><div class="eb-meta"><span>${mmss(e.length)}</span><span>${e.start ? ago(e.start * 1000) : ''}</span></div><div class="teams">${blocks}</div></div>`;
+    <div class="lol-body eog-body"><div class="eb-meta">${meta.map((m) => `<span>${m}</span>`).join('')}</div>${strip}<div class="teams">${blocks}</div></div>`;
 }
 
 function render() {

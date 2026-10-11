@@ -183,6 +183,19 @@ class RiotLink:
                 self._mmr.pop(k, None)
         return d
 
+    async def rr_changes(self, puuids: list[str], match_id: str) -> dict[str, dict]:
+        """競技模式賽後：每人這場的 RR 變化(competitiveupdates)。查不到的人不會出現在結果裡。"""
+        async def one(pu):
+            d = await self._paced(f'/mmr/v1/players/{pu}/competitiveupdates?startIndex=0&endIndex=5&queue=competitive')
+            for m in (d or {}).get('Matches') or []:
+                if m.get('MatchID') == match_id:
+                    return pu, {'earned': m.get('RankedRatingEarned') or 0, 'before': m.get('TierBefore') or 0,
+                                'after': m.get('TierAfterUpdate') or 0, 'rrAfter': m.get('RankedRatingAfterUpdate') or 0,
+                                'bonus': m.get('RankedRatingPerformanceBonus') or 0, 'afk': m.get('AFKPenalty') or 0}
+            return pu, None
+        res = await asyncio.gather(*[one(p) for p in puuids])
+        return {pu: v for pu, v in res if v}
+
     async def names(self, puuids: list[str]) -> dict[str, dict]:
         d = await self.pd('/name-service/v2/players', 'PUT', puuids)
         return {p['Subject']: p for p in d if p.get('Subject')} if isinstance(d, list) else {}

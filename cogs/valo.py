@@ -13,6 +13,7 @@ import logging
 import os
 import re
 import time
+from datetime import datetime, timezone
 from typing import Optional
 from urllib.parse import quote
 
@@ -24,7 +25,7 @@ from discord.ext import commands
 
 from cogs.riot_api import RateLimiter
 from cogs.valo_live import MODE_RECENT, RiotLink, shard_from_env
-from cogs.valo_live_parse import eog_table, mode_record, parse_match, recent_line
+from cogs.valo_live_parse import eog_table, henrik_to_riot, mode_record, parse_match, recent_line
 from cogs.valo_parse import detail, mmr_summary, summarize
 
 log = logging.getLogger(__name__)
@@ -133,9 +134,9 @@ async def load_content(http: aiohttp.ClientSession) -> dict:
             async with http.get(f'{VAPI}/{path}', timeout=aiohttp.ClientTimeout(total=20)) as r:
                 r.raise_for_status()
                 return (await r.json())['data']
-        agents, maps, tiers = await asyncio.gather(
+        agents, maps, tiers, weapons, ceremonies = await asyncio.gather(
             j('agents?language=zh-TW'), j('maps?language=zh-TW'),
-            j('competitivetiers?language=zh-TW'))
+            j('competitivetiers?language=zh-TW'), j('weapons?language=zh-TW'), j('ceremonies?language=zh-TW'))
         # 不篩 isPlayableCharacter：KAY/O 在 valorant-api 有兩個 uuid，遊戲用的那個(773f0c78…)被標成不可玩，
         # 篩掉就查不到名字跟圖。沒圖的重複項借用同名可玩特務的圖。
         icon_by_name = {a['displayName']: a['displayIcon'] for a in agents
@@ -149,6 +150,10 @@ async def load_content(http: aiohttp.ClientSession) -> dict:
             'mapIcons': {m['uuid']: m.get('listViewIcon') for m in maps},
             'tiers': {str(t['tier']): {'name': t['tierName'], 'icon': t.get('largeIcon') or t.get('smallIcon')}
                       for t in tiers[-1]['tiers']},
+            # 結算：擊殺用的武器、回合 Ceremony(Clutch/Ace/…)名稱。key 都小寫，match-details 的 uuid 大小寫不一
+            'weapons': {w['uuid'].lower(): w['displayName'] for w in weapons},
+            'ceremonies': {('ceremony' + c.get('assetPath', '').rsplit('/', 1)[-1].replace('Ceremony_PrimaryAsset', '')).lower():
+                           c['displayName'] for c in ceremonies},
         }
         with open(CONTENT_FILE, 'w', encoding='utf-8') as f:
             json.dump(c, f, ensure_ascii=False)
@@ -160,6 +165,19 @@ async def load_content(http: aiohttp.ClientSession) -> dict:
                 return json.load(f)
         except (OSError, ValueError):
             return {'agents': {}, 'maps': {}, 'mapIcons': {}, 'tiers': {}}
+
+
+def add_lines(emb: discord.Embed, name: str, lines: list[str]):
+    """embed 欄位上限 1024 字 → 太長就拆成好幾欄(後面的欄名留空)。"""
+    chunk, first = [], True
+    for ln in lines + [None]:
+        if ln is None or len('\n'.join(chunk + [ln])) > 1024:
+            if chunk:
+                emb.add_field(name=name if first else '\u200b', value='\n'.join(chunk), inline=False)
+                first = False
+            chunk = []
+        if ln is not None:
+            chunk.append(ln[:1024])
 
 
 def parse_rid(text: str) -> Optional[tuple[str, str]]:
@@ -297,8 +315,11 @@ class ValoCog(commands.Cog):
                     missing = [p for p in pu if p not in names]
                     if missing:
                         names.update(await self.link.names(missing))
+                    rr = {}
+                    if ((d.get('matchInfo') or {}).get('queueID') or '').lower() == 'competitive':
+                        rr = await self.link.rr_changes(pu, self._live_mid)
                     self.state['_eog_at'] = time.time()
-                    self._set(eog=eog_table(d, me, self._live_hidden, self.content, names))
+                    self._set(eog=eog_table(d, me, self._live_hidden, self.content, names, rr))
                 elif self._eog_tries < EOG_TRIES:
                     return LIVE_POLL_MATCH
             self._live_mid, self._live_hidden, self._eog_tries = '', set(), 0
@@ -441,6 +462,95 @@ class ValoCog(commands.Cog):
                 emb.set_footer(text='資料來源 HenrikDev')
         else:
             emb.add_field(name='最近對戰', value='沒有資料', inline=False)
+        return emb
+
+    def _rich_embed(self, e: dict, title: str) -> discord.Embed:
+        """賽後完整計分板(eog_table 的輸出)：valo-track 貼文與 /valo 單場詳細共用。"""
+        mine = next((t for t in e['teams'] if t['mine']), None)
+        won = mine['won'] if mine else None
+        color = COLOR_DRAW if won is None else (COLOR_WIN if won else COLOR_LOSS)
+        two = len(e['teams']) == 2
+        score = f"　{e['teams'][0]['rounds']}:{e['teams'][1]['rounds']}" if two and e['rounds'] and len(e['rounds']) > 1 else ''
+        emb = discord.Embed(title=f"{title}{score}　{e['queue']}・{_esc(e['map'])}", color=color)
+        meta = [f"{e['length'] // 60} 分 {e['length'] % 60:02d} 秒"]
+        if e.get('start'):
+            meta.append(discord.utils.format_dt(datetime.fromtimestamp(e['start'], tz=timezone.utc), 'R'))
+        if e.get('server'):
+            meta.append(f"伺服器 {e['server']}")
+        if e.get('version'):
+            meta.append(f"版本 {e['version']}")
+        if e.get('early'):
+            meta.append('提前結束')
+        emb.description = '・'.join(meta)
+        rb = any(p['rounds'] > 1 for t in e['teams'] for p in t['players'])
+        names = {p['puuid']: p for t in e['teams'] for p in t['players']}
+
+        def who(p):
+            if p['hidden']:
+                return '🙈 隱藏名字'
+            return f"{_esc(p['name'])}#{_esc(p['tag'])}" if p['name'] else '?'
+
+        for t in e['teams']:
+            head = ('我方' if t['mine'] else '敵方') if two else '全部玩家'
+            if t['won'] is not None and two:
+                head += f"　{'勝' if t['won'] else '敗'}"
+            lines = []
+            for p in t['players']:
+                tags = ''.join(x for x in ((f" [組隊{p['party']}]" if p.get('party') else ''), (' ⭐MVP' if p['mvp'] else ''),
+                                           (' 🎮' if p.get('platform') and p['platform'] != 'pc' else ''),
+                                           (f" 💤AFK {p['afk']}回" if p.get('afk') else '')) if x)
+                l1 = (f"{'▶ ' if p['me'] else ''}**{_esc(p['agent'])}** {who(p)}{tags}　{p['k']}/{p['d']}/{p['a']}　"
+                      + (f"ACS {round(p['score'] / p['rounds'])}・ADR {round(p['dmg'] / p['rounds'])}" if rb
+                         else f"分數 {p['score']}・傷害 {p['dmg']}")
+                      + f"・HS {p['hs']}%" + (f"・KAST {p['kast']}%" if p.get('kast') is not None else ''))
+                bits = []
+                if p.get('mk') is not None:
+                    bits.append(f"首殺 {p['fb']}/被首殺 {p['fd']}")
+                    mk = [f"{n}{'K' if n < 5 else 'K(ACE)'}×{c}" for n, c in zip((3, 4, 5), p['mk']) if c]
+                    if mk:
+                        bits.append(' '.join(mk))
+                    if p['clutch']:
+                        bits.append('Clutch ' + ','.join(p['clutch']))
+                if p.get('econ'):
+                    bits.append(f"裝備均 {p['econ'] / 1000:.1f}k" + (f" {p['weapon']}" if p.get('weapon') else ''))
+                elif p.get('weapon'):
+                    bits.append(f"主武器 {p['weapon']}")
+                if any(p.get('casts') or []):
+                    bits.append('技能 ' + '/'.join(str(c) for c in p['casts']))
+                if p.get('plants') or p.get('defuses'):
+                    bits.append(f"下包 {p['plants']}/拆包 {p['defuses']}")
+                rank = (self.content['tiers'].get(str(p['tier'])) or {}).get('name') if p.get('tier') else ''
+                rr = p.get('rr') or {}
+                if rank or rr:
+                    r = rank or ''
+                    if rr.get('earned') is not None and (rr or {}).get('rrAfter') is not None:
+                        after = (self.content['tiers'].get(str(rr.get('after'))) or {}).get('name') or rank
+                        r = f"{after} {rr['rrAfter']} RR（{rr['earned']:+d}）"
+                    elif rr.get('earned') is not None:
+                        r = f"{r}（{rr['earned']:+d} RR）"
+                    bits.append(r)
+                if p.get('level'):
+                    bits.append(f"Lv{p['level']}")
+                lines.append(l1 + (f"\n　　{'・'.join(bits)}" if bits else ''))
+            add_lines(emb, head, lines)
+        rounds = e.get('rounds') or []
+        if len(rounds) > 1 and e.get('myTeam'):
+            glyph = {'Detonate': '💥', 'Defuse': '✂️', 'Surrendered': '🏳️'}
+            strip = ''.join(('🟦' if r['win'] == e['myTeam'] else '🟥') + glyph.get(r['code'], '') for r in rounds)
+            notes = []
+            for r in rounds:
+                parts = []
+                if r['ceremony']:
+                    parts.append(r['ceremony'])
+                if r['site']:
+                    parts.append(f"{r['site']} 包" + (f"（{_esc(names[r['planter']]['agent'])}）" if r['planter'] in names else ''))
+                if r['defuser'] in names:
+                    parts.append(f"拆包 {_esc(names[r['defuser']]['agent'])}")
+                if r['ceremony'] and parts:
+                    notes.append(f"R{r['n'] + 1} {' '.join(parts)}")
+            add_lines(emb, f'回合（藍 = 我方贏；💥爆炸 ✂️拆除）', [strip] + ([' / '.join(notes)] if notes else []))
+        foot = f"MVP {_esc(names[e['matchMvp']]['agent'])}・" if e.get('matchMvp') in names else ''
+        emb.set_footer(text=foot + 'ACS 每回合分數・ADR 每回合傷害・KAST 有殺/助攻/存活/被換的回合比例・技能 C/Q/E/X 次數')
         return emb
 
     def _detail_embed(self, d: dict) -> discord.Embed:
@@ -663,7 +773,9 @@ class ValoCog(commands.Cog):
         if not m:
             await interaction.followup.send('❌ 拿不到這場的資料（可能 API 額度暫時用完）', ephemeral=True)
             return
-        await interaction.followup.send(embed=self._detail_embed(detail(m, puuid, self.content)), ephemeral=True)
+        e = eog_table(henrik_to_riot(m), puuid, set(), self.content)
+        emb = self._rich_embed(e, '🔫 單場詳細') if e['teams'] else self._detail_embed(detail(m, puuid, self.content))
+        await interaction.followup.send(embed=emb, ephemeral=True)
 
     # ── 背景追蹤 ──
     async def _track_loop(self):
@@ -719,17 +831,21 @@ class ValoCog(commands.Cog):
             res = s['score'] or '結束'
         else:
             res = '平手' if s['draw'] else ('勝利' if s['won'] else ('落敗' if s['won'] is False else '結束'))
-        emb = discord.Embed(title=f"🔫 {_esc(t['name'])} 剛打完一場：{res}", color=color,
-                            description=self._match_line(s))
+        mmr = await self.api.mmr(t['region'], t['name'], t['tag'], background=True) if s['queue'] == '競技' else None
+        rr = {}
+        if mmr:
+            ms_ = mmr_summary(mmr, self.content)
+            if isinstance(ms_['lastChange'], int):
+                rr[puuid] = {'earned': ms_['lastChange'], 'after': ms_['current']['id'], 'rrAfter': ms_['rr']}
+        # 完整計分板(跟 Activity 結算同一套計算)；HenrikDev 資料不完整時退回一行摘要
+        e = eog_table(henrik_to_riot(m), puuid, set(), self.content, None, rr)
+        if e['teams']:
+            emb = self._rich_embed(e, f"🔫 {_esc(t['name'])} 剛打完一場：{res}")
+        else:
+            emb = discord.Embed(title=f"🔫 {_esc(t['name'])} 剛打完一場：{res}", color=color, description=self._match_line(s))
         icon = (self.content['agents'].get(s['agentId']) or {}).get('icon')
         if icon:
             emb.set_thumbnail(url=icon)
-        mmr = await self.api.mmr(t['region'], t['name'], t['tag'], background=True) if s['queue'] == '競技' else None
-        if mmr:
-            ms_ = mmr_summary(mmr, self.content)
-            ch_ = ms_['lastChange']
-            emb.add_field(name='牌位', value=f"{_esc(ms_['current']['name'])} {ms_['rr']} RR"
-                                             f"{f'（{ch_:+d}）' if isinstance(ch_, int) else ''}")
         try:
             await ch.send(embed=emb, view=self._select(t['region'], puuid, [s]))
         except discord.HTTPException as e:

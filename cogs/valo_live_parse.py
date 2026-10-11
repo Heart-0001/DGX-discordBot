@@ -9,7 +9,8 @@ QUEUE_ZH = {'competitive': '競技', 'unrated': '一般', 'swiftplay': '快速',
 
 def map_name(path: str, content: dict) -> str:
     """'/Game/Maps/Ascent/Ascent' → 中文名；content['mapPaths'] 由 valorant-api 的 mapUrl 建。"""
-    return (content.get('mapPaths') or {}).get(path) or (path or '?').rsplit('/', 1)[-1]
+    return ((content.get('mapPaths') or {}).get(path) or (content.get('maps') or {}).get(path)
+            or (path or '?').rsplit('/', 1)[-1])
 
 
 def rank_of(mmr: Optional[dict], season: str, content: dict) -> dict:
@@ -127,9 +128,11 @@ def recent_line(games: list[dict]) -> str:
     return f'近{len(games)} {rec}KDA {kda}'
 
 
-def eog_table(d: dict, me: str, hidden: set, content: dict, names: Optional[dict] = None) -> dict:
+def eog_table(d: dict, me: str, hidden: set, content: dict, names: Optional[dict] = None,
+              rr: Optional[dict] = None) -> dict:
     """pd /match-details 賽後 → {map, queue, teams:[{mine, won, rounds, players:[...]}]}。
-    hidden: 對局中開隱藏名字的 puuid；names: name-service 查到的名字(match-details 現在不給名字)。"""
+    hidden: 對局中開隱藏名字的 puuid；names: name-service 查到的名字(match-details 現在不給名字)；
+    rr: {puuid: competitiveupdates 的這場 RR 變化}(只有競技模式有)。"""
     names = names or {}
     info = d.get('matchInfo') or {}
     agents = content.get('agents', {})
@@ -137,11 +140,21 @@ def eog_table(d: dict, me: str, hidden: set, content: dict, names: Optional[dict
     tinfo = {t.get('teamId'): t for t in d.get('teams') or []}
     my_team = next((p.get('teamId') for p in d.get('players') or [] if p.get('subject') == me), None)
     teams: dict[str, list] = {}
+    extras = eog_extras(d, content)
+    parties = party_tags(d.get('players') or [])
     for p in d.get('players') or []:
         st = p.get('stats') or {}
         pu = p.get('subject', '')
         hid = pu in hidden and pu != me
+        casts = st.get('abilityCasts') or {}
+        bf = p.get('behaviorFactors') or {}
         teams.setdefault(p.get('teamId'), []).append({
+            **extras['players'].get(pu, {}),
+            'party': parties.get(pu, ''),
+            'platform': (p.get('platformInfo') or {}).get('platformType', ''),
+            'casts': [casts.get(k) or 0 for k in ('grenadeCasts', 'ability1Casts', 'ability2Casts', 'ultimateCasts')],
+            'afk': bf.get('afkRounds') or 0,
+            'rr': (rr or {}).get(pu),
             'puuid': pu, 'me': pu == me, 'hidden': hid,
             'name': '' if hid else (names.get(pu) or {}).get('GameName') or p.get('gameName', ''),
             'tag': '' if hid else (names.get(pu) or {}).get('TagLine') or p.get('tagLine', ''),
@@ -162,6 +175,234 @@ def eog_table(d: dict, me: str, hidden: set, content: dict, names: Optional[dict
     if queue == 'deathmatch':          # 死鬥每人一隊 → 併成一張表
         allp = sorted([p for t in out for p in t['players']], key=lambda x: -x['score'])
         out = [{'mine': True, 'won': None, 'rounds': 0, 'players': allp}]
+    pod = info.get('gamePodId') or ''
     return {'queue': QUEUE_ZH.get(queue, queue or '?'), 'map': map_name(info.get('mapId') or '', content),
             'length': (info.get('gameLengthMillis') or 0) // 1000, 'start': (info.get('gameStartMillis') or 0) // 1000,
-            'teams': out}
+            'teams': out, 'rounds': extras['rounds'], 'myTeam': my_team,
+            'ranked': bool(info.get('isRanked')), 'early': bool(info.get('isEarlyCompletion')),
+            'version': (info.get('gameVersion') or '').replace('release-', '').split('-shipping')[0],
+            'server': server_name(pod), 'matchMvp': d.get('matchMvp') or ''}
+
+
+SERVER_ZH = {'ape1': '香港', 'apne1': '東京', 'apse1': '新加坡', 'apse2': '雪梨', 'aps1': '孟買', 'apne2': '首爾',
+             'use1': '美東', 'usw2': '美西', 'euc1': '法蘭克福', 'euw2': '倫敦', 'sae1': '聖保羅'}
+
+
+def server_name(pod: str) -> str:
+    """'aresriot.aws-ape1-prod.ap-gp-hongkong-1' → '香港'。"""
+    for key, name in SERVER_ZH.items():
+        if f'-{key}-' in pod:
+            return name
+    return pod.split('.')[-1] if pod else ''
+
+
+def party_tags(players: list) -> dict[str, str]:
+    """同 partyId 的人(≥2)給同一個字母，方便看誰是組隊來的。"""
+    groups: dict[str, list] = {}
+    for p in players:
+        if p.get('partyId'):
+            groups.setdefault(p['partyId'], []).append(p.get('subject', ''))
+    out = {}
+    letters = iter('ABCDEFGHIJ')
+    for pid, members in groups.items():
+        if len(members) >= 2:
+            tag = next(letters, '?')
+            for pu in members:
+                out[pu] = tag
+    return out
+
+
+def eog_extras(d: dict, content: dict) -> dict:
+    """用 roundResults + kills 算每人的進階數據與每回合摘要。
+    players[pu] = {hs, kast, fb, fd, mk:[3K,4K,5K+ 次數], clutch:[...'1v2'], econ(平均裝備值), weapon(最常用槍), plants, defuses}
+    rounds = [{n, win(teamId), code, site, planter, defuser, ceremony, fb, score:[紅,藍]...}]"""
+    weapons = content.get('weapons') or {}
+    ceremonies = content.get('ceremonies') or {}
+    players = d.get('players') or []
+    team_of = {p.get('subject'): p.get('teamId') for p in players}
+    members: dict[str, list] = {}
+    for pu, t in team_of.items():
+        members.setdefault(t, []).append(pu)
+    queue = ((d.get('matchInfo') or {}).get('queueID') or '').lower()
+    ffa = queue == 'deathmatch'
+    stats = {pu: {'hs': [0, 0, 0], 'kast': 0, 'fb': 0, 'fd': 0, 'mk': [0, 0, 0], 'clutch': [],
+                  'loadout': [], 'weapons': {}, 'plants': 0, 'defuses': 0} for pu in team_of}
+    kills_by_round: dict[int, list] = {}
+    for k in d.get('kills') or []:
+        kills_by_round.setdefault(k.get('round', 0), []).append(k)
+    rounds = []
+    score: dict[str, int] = {}
+    team_ids = sorted(members)
+    for r in d.get('roundResults') or []:
+        n = r.get('roundNum', 0)
+        rk = sorted(kills_by_round.get(n, []), key=lambda k: k.get('roundTime', 0))
+        winner = r.get('winningTeam')
+        if winner:
+            score[winner] = score.get(winner, 0) + 1
+        # 每人這回合：命中部位、裝備值、殺敵數
+        kills_in_round: dict[str, int] = {}
+        for ps in r.get('playerStats') or []:
+            pu = ps.get('subject', '')
+            st = stats.get(pu)
+            if not st:
+                continue
+            for dm in ps.get('damage') or []:
+                st['hs'][0] += dm.get('headshots', 0)
+                st['hs'][1] += dm.get('bodyshots', 0)
+                st['hs'][2] += dm.get('legshots', 0)
+            eco = ps.get('economy') or {}
+            if eco.get('loadoutValue') is not None:
+                st['loadout'].append(eco['loadoutValue'])
+            kills_in_round[pu] = len(ps.get('kills') or [])
+            for k in ps.get('kills') or []:
+                item = ((k.get('finishingDamage') or {}).get('damageItem') or '').lower()
+                if (k.get('finishingDamage') or {}).get('damageType') == 'Weapon' and item:
+                    st['weapons'][item] = st['weapons'].get(item, 0) + 1
+        for pu, c in kills_in_round.items():
+            if c >= 3:
+                stats[pu]['mk'][min(c, 5) - 3] += 1
+        if r.get('bombPlanter') in stats:
+            stats[r['bombPlanter']]['plants'] += 1
+        if r.get('bombDefuser') in stats:
+            stats[r['bombDefuser']]['defuses'] += 1
+        # 首殺 / 被首殺
+        fb = r.get('firstBloodPlayer') or (rk[0].get('killer') if rk else None)
+        if fb in stats:
+            stats[fb]['fb'] += 1
+        if rk and rk[0].get('victim') in stats:
+            stats[rk[0]['victim']]['fd'] += 1
+        # KAST 與 Clutch：照擊殺順序算誰還活著
+        alive = {t: set(m) for t, m in members.items()}
+        dead_at: dict[str, int] = {}
+        killer_of: dict[str, str] = {}
+        candidate: dict[str, tuple[str, int]] = {}   # team → (最後一個活人, 當時敵方人數)
+        for k in rk:
+            v, kl = k.get('victim'), k.get('killer')
+            t = team_of.get(v)
+            if t and v in alive[t]:
+                alive[t].discard(v)
+                dead_at[v] = k.get('roundTime', 0)
+                killer_of[v] = kl
+            if not ffa:
+                for t2, al in alive.items():
+                    if len(al) == 1 and t2 not in candidate:
+                        others = sum(len(a) for t3, a in alive.items() if t3 != t2)
+                        if others >= 1:
+                            candidate[t2] = (next(iter(al)), others)
+        if winner in candidate and not ffa:
+            pu, vs = candidate[winner]
+            stats[pu]['clutch'].append(f'1v{vs}')
+        assisted = {a for k in rk for a in (k.get('assistants') or [])}
+        for pu in team_of:
+            survived = pu not in dead_at
+            traded = pu in dead_at and any(
+                kv == killer_of.get(pu) and 0 <= t2 - dead_at[pu] <= 5000 for kv, t2 in dead_at.items())
+            if kills_in_round.get(pu) or pu in assisted or survived or traded:
+                stats[pu]['kast'] += 1
+        rounds.append({
+            'n': n, 'win': winner, 'code': r.get('roundResultCode') or '', 'site': r.get('plantSite') or '',
+            'planter': r.get('bombPlanter') or '', 'defuser': r.get('bombDefuser') or '',
+            'ceremony': ceremony_name(r.get('roundCeremony'), ceremonies),
+            'fb': fb or '', 'score': [score.get(t, 0) for t in team_ids],
+        })
+    nrounds = max(1, len(rounds))
+    roundbased = len(rounds) > 1 and not ffa    # 團隊死鬥/死鬥只有 1 回合，KAST/多殺/Clutch 沒意義
+    out = {}
+    for pu, st in stats.items():
+        tot = sum(st['hs'])
+        top = max(st['weapons'].items(), key=lambda kv: kv[1])[0] if st['weapons'] else ''
+        loadout = [v for v in st['loadout'] if v]
+        out[pu] = {
+            'hs': round(st['hs'][0] * 100 / tot) if tot else 0,
+            'kast': round(st['kast'] * 100 / nrounds) if roundbased else None,
+            'fb': st['fb'] if roundbased else 0, 'fd': st['fd'] if roundbased else 0,
+            'mk': st['mk'] if roundbased else None, 'clutch': st['clutch'] if roundbased else [],
+            'econ': round(sum(loadout) / len(loadout)) if loadout else None,
+            'weapon': weapons.get(top, '') if top else '',
+            'plants': st['plants'], 'defuses': st['defuses'],
+        }
+    return {'players': out, 'rounds': rounds, 'teamIds': team_ids}
+
+
+def ceremony_name(raw, ceremonies: dict) -> str:
+    """'CeremonyClutch' / 'Clutch'(HenrikDev) → 中文名；Default / 空 → ''。"""
+    key = 'ceremony' + (raw or '').replace('Ceremony', '').replace(' ', '').lower()
+    if key in ('ceremony', 'ceremonydefault'):
+        return ''
+    return ceremonies.get(key) or (raw or '').replace('Ceremony', '')
+
+
+def henrik_to_riot(m: dict) -> dict:
+    """HenrikDev v4 的一場 → Riot match-details 的形狀，讓 eog_table / eog_extras 兩邊共用。"""
+    meta = m.get('metadata') or {}
+    rounds = m.get('rounds') or []
+    kills = m.get('kills') or []
+    started = 0
+    if meta.get('started_at'):
+        from datetime import datetime
+        try:
+            started = int(datetime.fromisoformat(meta['started_at'].replace('Z', '+00:00')).timestamp() * 1000)
+        except ValueError:
+            started = 0
+    q = (meta.get('queue') or {}).get('id') or ''
+    # 每人每回合傷害(整場 roundDamage 用)
+    dmg_rounds: dict[str, list] = {}
+    for r in rounds:
+        for st in r.get('stats') or []:
+            pu = (st.get('player') or {}).get('puuid', '')
+            dmg_rounds.setdefault(pu, []).append({'round': r.get('id', 0),
+                                                 'damage': sum(e.get('damage', 0) for e in st.get('damage_events') or [])})
+    players = []
+    for p in m.get('players') or []:
+        ac = p.get('ability_casts') or {}
+        players.append({
+            'subject': p.get('puuid', ''), 'gameName': p.get('name', ''), 'tagLine': p.get('tag', ''),
+            'teamId': p.get('team_id'), 'partyId': p.get('party_id'), 'characterId': (p.get('agent') or {}).get('id', ''),
+            'stats': {**{k: (p.get('stats') or {}).get(k, 0) for k in ('score', 'kills', 'deaths', 'assists')},
+                      'roundsPlayed': len(rounds),
+                      'abilityCasts': {'grenadeCasts': ac.get('grenade') or 0, 'ability1Casts': ac.get('ability1') or 0,
+                                       'ability2Casts': ac.get('ability2') or 0, 'ultimateCasts': ac.get('ultimate') or 0}},
+            'roundDamage': dmg_rounds.get(p.get('puuid', ''), []),
+            'competitiveTier': (p.get('tier') or {}).get('id') or 0, 'accountLevel': p.get('account_level'),
+            'platformInfo': {'platformType': p.get('platform') or ''},
+            'behaviorFactors': {'afkRounds': (p.get('behavior') or {}).get('afk_rounds') or 0},
+        })
+    teams = [{'teamId': t.get('team_id'), 'won': t.get('won'), 'roundsWon': (t.get('rounds') or {}).get('won', 0),
+              'mvp': (t.get('mvp') or {}).get('puuid')} for t in m.get('teams') or []]
+    rkills = []
+    for k in kills:
+        w = k.get('weapon') or {}
+        rkills.append({'round': k.get('round', 0), 'roundTime': k.get('time_in_round_in_ms', 0),
+                       'killer': (k.get('killer') or {}).get('puuid'), 'victim': (k.get('victim') or {}).get('puuid'),
+                       'assistants': [a.get('puuid') for a in k.get('assistants') or [] if a.get('puuid')],
+                       'finishingDamage': {'damageType': w.get('type') or '', 'damageItem': w.get('id') or ''}})
+    by_round: dict[int, list] = {}
+    for k in rkills:
+        by_round.setdefault(k['round'], []).append(k)
+    rr = []
+    for r in rounds:
+        n = r.get('id', 0)
+        ps = []
+        for st in r.get('stats') or []:
+            pu = (st.get('player') or {}).get('puuid', '')
+            eco = st.get('economy') or {}
+            ps.append({'subject': pu,
+                       'damage': [{'receiver': (e.get('player') or {}).get('puuid', ''), 'damage': e.get('damage', 0),
+                                   'headshots': e.get('headshots', 0), 'bodyshots': e.get('bodyshots', 0),
+                                   'legshots': e.get('legshots', 0)} for e in st.get('damage_events') or []],
+                       'economy': {'loadoutValue': eco.get('loadout_value'), 'weapon': ((eco.get('weapon') or {}).get('id') if isinstance(eco.get('weapon'), dict) else eco.get('weapon'))},
+                       'kills': [k for k in by_round.get(n, []) if k['killer'] == pu]})
+        plant, defuse = r.get('plant') or {}, r.get('defuse') or {}
+        rr.append({'roundNum': n, 'winningTeam': r.get('winning_team'), 'roundResultCode': r.get('result') or '',
+                   'roundCeremony': r.get('ceremony') or '', 'plantSite': plant.get('site') or '',
+                   'bombPlanter': (plant.get('player') or {}).get('puuid') or '',
+                   'bombDefuser': (defuse.get('player') or {}).get('puuid') or '',
+                   'firstBloodPlayer': (r.get('first_blood') or {}).get('puuid') or '', 'playerStats': ps})
+    return {
+        'matchInfo': {'matchId': meta.get('match_id'), 'queueID': q, 'mapId': (meta.get('map') or {}).get('id', ''),
+                      'gameLengthMillis': meta.get('game_length_in_ms') or 0, 'gameStartMillis': started,
+                      'isRanked': q == 'competitive', 'isCompleted': meta.get('is_completed', True),
+                      'gameVersion': meta.get('game_version') or '', 'gamePodId': meta.get('cluster') or ''},
+        'players': players, 'teams': teams, 'roundResults': rr, 'kills': rkills,
+        'matchMvp': (meta.get('mvp') or {}).get('puuid') or '',
+    }

@@ -90,6 +90,33 @@ class CookieAuth:
         self.access = ''
         return True
 
+    async def _password_login(self, user: str, pw: str, d: dict) -> bool:
+        """auth.riotgames.com 的帳密流程 → 拿到這個 session 的 ssid 存起來；之後 login() 用 ssid 就好。"""
+        jar = aiohttp.CookieJar(unsafe=True)
+        async with aiohttp.ClientSession(cookie_jar=jar, headers={'User-Agent': UA}) as h:
+            body = {'client_id': 'play-valorant-web-prod', 'nonce': '1', 'redirect_uri': 'https://playvalorant.com/opt_in',
+                    'response_type': 'token id_token', 'scope': 'account openid'}
+            async with h.post('https://auth.riotgames.com/api/v1/authorization', json=body,
+                              timeout=aiohttp.ClientTimeout(total=20)) as r:
+                await r.read()
+            async with h.put('https://auth.riotgames.com/api/v1/authorization',
+                             json={'type': 'auth', 'username': user, 'password': pw, 'remember': True, 'language': 'en_US'},
+                             timeout=aiohttp.ClientTimeout(total=20)) as r:
+                res = await r.json(content_type=None)
+            if res.get('type') != 'response':
+                # multifactor = 小帳開了兩步驟驗證；auth_failure = 帳密錯；captcha = 被要求驗證碼
+                self.fail_reason = f"帳密登入失敗：{res.get('type')} {res.get('error', '')}"
+                log.warning(f'🔫 小帳 {self.fail_reason}')
+                return False
+            ssid = next((c.value for c in jar if c.key == 'ssid'), '')
+            if not ssid:
+                self.fail_reason = '帳密登入成功但沒拿到 ssid'
+                return False
+            d['ssid'], d['refreshed_at'] = ssid, time.time()
+            _save(d)
+            log.info('🔫 小帳帳密登入成功，之後用 ssid 續命')
+            return True
+
     async def login(self, force: bool = False) -> bool:
         if self.ok and not force:
             return True
@@ -97,11 +124,19 @@ class CookieAuth:
             return False
         self._retry_at = time.time() + 600
         d = _load()
-        if not d.get('ssid') and not d.get('refresh_token'):
-            self.fail_reason = '沒有 cookie 檔'
+        user, pw = os.getenv('RIOT_ALT_USER', '').strip(), os.getenv('RIOT_ALT_PASS', '')
+        if not d.get('ssid') and not d.get('refresh_token') and not (user and pw):
+            self.fail_reason = '沒有 cookie 檔，.env 也沒有 RIOT_ALT_USER / RIOT_ALT_PASS'
             return False
         try:
             id_token = ''
+            if not d.get('ssid') and user and pw:
+                # bot 自己的 session：帳密登入一次(實測從 DGX 不用驗證碼)，之後靠回來的 ssid cookie 續命，不再送密碼
+                ok = await self._password_login(user, pw, d)
+                if not ok:
+                    return False
+            if d.get('ssid'):
+                d.pop('refresh_token', None)   # 有自己的 session 就不用 PC 匯入的 refresh token(會跟 PC 的 client 互相作廢)
             if d.get('refresh_token'):
                 # 新版 Riot Client(2025+)：OAuth refresh token；回應會給新的 refresh token → 存回去(舊的作廢)
                 async with self.http.post(TOKEN_URL, headers={'User-Agent': UA},
@@ -125,7 +160,9 @@ class CookieAuth:
                     new_ssid = r.cookies.get('ssid')
                     if r.status not in (302, 303) or 'access_token' not in loc:
                         self.fail_reason = f'cookie 失效或被擋（HTTP {r.status}）'
-                        log.warning(f'🔫 小帳 cookie 登入失敗: {self.fail_reason}')
+                        log.warning(f'🔫 小帳 cookie 登入失敗: {self.fail_reason}，下次改用帳密重登')
+                        d.pop('ssid', None)
+                        _save(d)
                         return False
                 frag = parse_qs(urlparse(loc).fragment)
                 self.access = frag['access_token'][0]

@@ -43,8 +43,8 @@
   - 頂列顯示即時回合比數；**賽後**自動變成計分板（K/D/A、ACS、ADR、MVP）
   - 開隱藏名字的玩家只藏名字，牌位與戰績照查
 - `/valo-live [名字#tag]` 純文字版：PC 的 Riot Client 有登入就查**自己**的對局（雙方 10 人牌位、近況；Riot 不給查別人的對局，填別人只在他跟你同場時顯示）；查不到對局或電腦沒開就退回 HenrikDev 的牌位與近況
-- `/valo 名字#tag` 查牌位、歷史最高與最近對戰（HenrikDev）
-- `/valo-track` 追蹤玩家，打完一場自動把戰績發到指定頻道（每個伺服器各自設一個頻道，在哪個伺服器 add 就發到哪）
+- `/valo 名字#tag` 查牌位、歷史最高與最近對戰（有設定小帳就直接查 Riot，否則 HenrikDev；名字→puuid 一律靠 HenrikDev）
+- `/valo-track` 追蹤玩家，打完一場自動把完整計分板發到指定頻道（每個伺服器各自設一個頻道，在哪個伺服器 add 就發到哪；有小帳就直接查 Riot，打完幾秒就有，否則等 HenrikDev）
 
 ### 🩺 健康檢查
 - `scripts/healthcheck.sh` 每日診斷 service 狀態、重啟抖動、403 / 播放失敗、OOM、yt-dlp 版本、log 大小

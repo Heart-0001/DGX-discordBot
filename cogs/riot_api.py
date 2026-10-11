@@ -147,6 +147,10 @@ class RiotApi:
         return await self.get(f'https://{REGIONAL}.api.riotgames.com/lol/match/v5/matches/by-puuid/{puuid}/ids'
                               f'?count={int(count)}', 300)
 
+    async def active_game(self, puuid: str) -> Optional[dict]:
+        """spectator-v5：正在打的那場(台服實測可用，連大混戰也有)；不在對局中回 None(404，快取 20 秒)。"""
+        return await self.get(f'https://{PLATFORM}.api.riotgames.com/lol/spectator/v5/active-games/by-summoner/{puuid}', 20)
+
     async def match(self, match_id: str) -> Optional[dict]:
         return await self.get(f'https://{REGIONAL}.api.riotgames.com/lol/match/v5/matches/{quote(match_id)}', 86400)
 

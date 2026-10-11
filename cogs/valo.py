@@ -7,6 +7,7 @@
 中文名稱與圖示來自 valorant-api.com(免費、不需要 key)。
 """
 import asyncio
+import io
 import json
 import logging
 import os
@@ -37,6 +38,7 @@ TRACK_EVERY = 60          # 秒：背景每輪查一位被追蹤的玩家
 BG_MIN_REMAINING = 12     # 剩餘額度少於這個就跳過背景查詢，留給互動指令
 MAX_TRACKED = 15
 ASSET_DIR = os.path.join(ROOT, 'data', 'valo_assets')
+ICON_PX = 160             # 特務/牌位圖示快取的邊長(原圖 1024，畫面最大約 64px，留 2x 給高 DPI)
 LIVE_POLL_IDLE, LIVE_POLL_MATCH, LIVE_POLL_OFFLINE = 10, 5, 60   # 秒：/valo-live 畫面輪詢 GLZ 的間隔
 EOG_TRIES = 12            # 對局結束後賽後資料可能要等一下，最多試幾次
 COLOR_WIN, COLOR_LOSS, COLOR_DRAW = 0x3BA55D, 0xED4245, 0x99AAB5
@@ -107,6 +109,23 @@ class HenrikApi:
             self._cache[f'/valorant/v4/match/{region}/{quote(mid, safe="")}'] = (time.time() + 86400, m)
 
 
+def shrink_png(data: bytes, px: int) -> bytes:
+    """把圖示縮到 px×px 以內的 PNG；壞圖或已經夠小就原樣回傳。"""
+    try:
+        from PIL import Image
+        im = Image.open(io.BytesIO(data))
+        if max(im.size) <= px:
+            return data
+        im = im.convert('RGBA')
+        im.thumbnail((px, px), Image.LANCZOS)
+        out = io.BytesIO()
+        im.save(out, 'PNG', optimize=True)
+        return out.getvalue()
+    except Exception as e:
+        log.warning(f'🔫 圖示縮圖失敗，存原圖: {e!r}')
+        return data
+
+
 async def load_content(http: aiohttp.ClientSession) -> dict:
     """特務、地圖、牌位的中文名稱與圖示。下載失敗用上次的快取。"""
     try:
@@ -115,10 +134,16 @@ async def load_content(http: aiohttp.ClientSession) -> dict:
                 r.raise_for_status()
                 return (await r.json())['data']
         agents, maps, tiers = await asyncio.gather(
-            j('agents?language=zh-TW&isPlayableCharacter=true'), j('maps?language=zh-TW'),
+            j('agents?language=zh-TW'), j('maps?language=zh-TW'),
             j('competitivetiers?language=zh-TW'))
+        # 不篩 isPlayableCharacter：KAY/O 在 valorant-api 有兩個 uuid，遊戲用的那個(773f0c78…)被標成不可玩，
+        # 篩掉就查不到名字跟圖。沒圖的重複項借用同名可玩特務的圖。
+        icon_by_name = {a['displayName']: a['displayIcon'] for a in agents
+                        if a.get('isPlayableCharacter') and a.get('displayIcon')}
         c = {
-            'agents': {a['uuid']: {'name': a['displayName'], 'icon': a.get('displayIcon')} for a in agents},
+            'agents': {a['uuid']: {'name': a['displayName'],
+                                   'icon': a.get('displayIcon') or icon_by_name.get(a['displayName'])}
+                       for a in agents},
             'maps': {m['uuid']: m['displayName'] for m in maps},
             'mapPaths': {m['mapUrl']: m['displayName'] for m in maps if m.get('mapUrl')},
             'mapIcons': {m['uuid']: m.get('listViewIcon') for m in maps},
@@ -334,6 +359,8 @@ class ValoCog(commands.Cog):
         except (aiohttp.ClientError, asyncio.TimeoutError):
             return None
         os.makedirs(os.path.dirname(path), exist_ok=True)
+        # 原圖 1024×1024、每張 300–460KB，10 人就 4MB，經 tunnel + Discord 代理很慢；縮到畫面用得到的大小。
+        data = await asyncio.to_thread(shrink_png, data, ICON_PX)
         with open(path + '.tmp', 'wb') as f:
             f.write(data)
         os.replace(path + '.tmp', path)
@@ -476,36 +503,78 @@ class ValoCog(commands.Cog):
         return emb
 
     # ── 指令 ──
-    @app_commands.command(name='valo-live', description='開啟 Valorant 對局畫面（隊友／對手牌位、近況）；text=True 改成貼一則文字')
-    @app_commands.describe(text='只貼一則文字版，不開 Activity')
-    async def valo_live(self, interaction: discord.Interaction, text: bool = False):
-        if not text:
-            if not interaction.user.voice:
-                await interaction.response.send_message('❌ 請先加入語音頻道再開 Valorant 畫面（或用 text:True）', ephemeral=True)
-                return
-            set_mode = getattr(self.bot, 'set_activity_mode', None)
-            if set_mode:
-                set_mode(interaction, 'valo')
-            if getattr(self.bot, 'activity_open', lambda i: False)(interaction):
-                await interaction.response.send_message('✅ 已切換成 Valorant 畫面', ephemeral=True)
-                return
-            try:
-                await interaction.response.launch_activity()
-            except discord.HTTPException as e:
-                log.error(f'launch_activity 失敗: {e!r}')
-                await interaction.response.send_message('❌ 無法開啟 Activity', ephemeral=True)
-            return
+    # 即時畫面一律由 /act(Activity)開；這裡是純文字版：
+    # 玩家 PC 的 Riot Client 有登入 → 直接查 Riot 的對局(雙方 10 人)；沒有 → 退回 HenrikDev 的牌位與近況
+    @app_commands.command(name='valo-live', description='查你目前的 Valorant 對局（雙方特務、牌位、近況）；填別人時顯示他的牌位與近況')
+    @app_commands.describe(player='玩家，例如 名字#1234（不填 = 你自己；Riot 只給查自己的對局，別人只能看牌位近況）')
+    async def valo_live(self, interaction: discord.Interaction, player: Optional[str] = None):
         await interaction.response.defer(thinking=True)
-        cur = await self.link.current_match() if self.link else None
-        if not cur:
-            await interaction.followup.send('目前沒有進行中的 Valorant 對局（或電腦沒開 Riot Client）')
+        rid = parse_rid(player) if player else None
+        if player and not rid:
+            await interaction.followup.send('❌ 格式是 `名字#tag`，例如 `名字#1234`')
             return
-        kind, m = cur
-        pl = m.get('Players') if kind == 'coregame' else (m.get('AllyTeam') or {}).get('Players')
-        puuids = [p['Subject'] for p in pl or [] if p.get('Subject')]
-        names, mmrs, season, recents = await self.link.lookup(puuids, self.content)
-        await interaction.followup.send(embed=self._live_embed(
-            parse_match(kind, m, names, mmrs, season, self.content, self.link.puuid), recents))
+        linked = bool(self.link) and await self.link.token()
+        acc = None
+        if rid:
+            acc = await self.api.account(*rid) if self.api else None
+            target = (acc or {}).get('puuid')
+            if not target:
+                await interaction.followup.send(f'❌ 找不到 Valorant 玩家 `{_esc(player)}`'
+                                                + ('' if self.api else '（沒有設定 HENRIK_API_KEY，查不了別人）'))
+                return
+        elif linked:
+            target = self.link.puuid
+        else:
+            await interaction.followup.send('❌ 沒填玩家，而且你電腦上的 Riot Client 沒登入，不知道要查誰。請填 `名字#tag`')
+            return
+
+        if linked:
+            # Riot 只給查登入者自己的對局(別人的 puuid 一律 403，2026-10-11 實測 273 人)
+            # → 填別人時看他是不是在我這場，在就顯示這場並標記他
+            cur = await self.link.current_match()
+            pl = []
+            if cur:
+                kind, m = cur
+                pl = m.get('Players') if kind == 'coregame' else (m.get('AllyTeam') or {}).get('Players')
+            puuids = [p['Subject'] for p in pl or [] if p.get('Subject')]
+            if target in puuids:
+                names, mmrs, season, recents = await self.link.lookup(puuids, self.content)
+                emb = self._live_embed(parse_match(kind, m, names, mmrs, season, self.content, target), recents)
+                emb.set_footer(text='牌位 = 競技模式本季；資料直接來自 Riot（經你電腦的客戶端登入），隱藏名字的玩家不顯示名字')
+                await interaction.followup.send(embed=emb)
+                return
+            if target == self.link.puuid:
+                note = '你目前不在對局中'
+            elif cur:
+                note = '這位玩家不在你這場；Riot 只給查你自己的對局'
+            else:
+                note = 'Riot 只給查你自己的對局，而你目前不在對局中'
+        else:
+            note = '你電腦上的 Riot Client 沒登入，查不到進行中的對局'
+
+        # 退路：HenrikDev 的牌位與近況(不需要 PC)
+        if not self.api:
+            await interaction.followup.send(f'ℹ️ {note}，而且沒有設定 HENRIK_API_KEY，沒有別的資料可以給')
+            return
+        if not acc:   # 查自己：puuid → 名字 → HenrikDev 帳號
+            n = (await self.link.names([target])).get(target) or {}
+            acc = await self.api.account(n.get('GameName', ''), n.get('TagLine', '')) if n.get('GameName') else None
+        if not acc:
+            await interaction.followup.send(f'ℹ️ {note}，HenrikDev 也查不到這位玩家')
+            return
+        emb, view = await self._profile(acc)
+        await interaction.followup.send(f'ℹ️ {note}，以下是牌位與近況（HenrikDev）：', embed=emb, view=view)
+
+    async def _profile(self, acc: dict) -> tuple[discord.Embed, discord.ui.View]:
+        region, name, tag = acc.get('region') or 'ap', acc['name'], acc['tag']
+        mmr, matches = await asyncio.gather(self.api.mmr(region, name, tag), self.api.matches(region, name, tag, 5))
+        sums = []
+        for m in matches or []:
+            self.api.remember_match(region, m)
+            s = summarize(m, acc['puuid'], self.content)
+            if s:
+                sums.append(s)
+        return self._profile_embed(acc, mmr, sums), self._select(region, acc['puuid'], sums)
 
     async def _resolve(self, interaction: discord.Interaction, player: str) -> Optional[dict]:
         if not self.api:
@@ -528,16 +597,8 @@ class ValoCog(commands.Cog):
         acc = await self._resolve(interaction, player)
         if not acc:
             return
-        region, name, tag = acc.get('region') or 'ap', acc['name'], acc['tag']
-        mmr, matches = await asyncio.gather(self.api.mmr(region, name, tag), self.api.matches(region, name, tag, 5))
-        sums = []
-        for m in matches or []:
-            self.api.remember_match(region, m)
-            s = summarize(m, acc['puuid'], self.content)
-            if s:
-                sums.append(s)
-        await interaction.followup.send(embed=self._profile_embed(acc, mmr, sums),
-                                        view=self._select(region, acc['puuid'], sums))
+        emb, view = await self._profile(acc)
+        await interaction.followup.send(embed=emb, view=view)
 
     @track.command(name='add', description='追蹤玩家：打完一場自動把戰績發到這個頻道')
     @app_commands.describe(player='玩家，例如 名字#1234')

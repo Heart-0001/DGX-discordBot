@@ -17,7 +17,7 @@
 - **起播失敗自動重試** — YouTube 偶發對串流 URL 回 403 時，自動重抓 URL 再播一次，不會無聲跳過
 
 ### 🎤 同步歌詞（Discord Activity）
-- `/lyrics` 在語音頻道開啟內嵌歌詞畫面，所有人一起看
+- `/act` 在語音頻道開啟內嵌 Activity（歌詞／LoL／Valorant 畫面自動切換），所有人一起看
 - 歌詞來源依序：**YouTube Music**（官方 LyricFind / Musixmatch）→ [LRCLIB](https://lrclib.net) → 網易雲 / QQ 音樂 / 酷狗
 - 自動清理標題（Official MV、括號、中英並列），歌手、歌名（簡繁通用）、歌曲長度都要對得上才採用，避免配到翻唱、試聽片段或同歌手的別首歌
 - 播放位置以 bot **實際送出的音框**計算，暫停 / 續播 / 換歌都即時跟上
@@ -26,21 +26,23 @@
 - `/act` **自動模式**：同一個 Activity，偵測到 LoL 或 Valorant 進入對局就切到對應畫面（賽後畫面保留 3 分鐘），沒有就顯示歌詞；遊戲畫面時歌詞縮成頂列的一小條（封面、歌名、目前那句）
 
 ### ⚔️ LoL 對戰資訊（Discord Activity）
-- `/lol` 在語音頻道開啟即時畫面（跟 `/lyrics` 共用同一個 Activity），跟著玩家的客戶端自動切換：
+- Activity 的 LoL 畫面（`/act`）跟著玩家的客戶端自動切換：
   - **選角**：隊友的牌位（含本季完整勝敗）、英雄熟練度、近期勝率（客戶端上限 100 場）、**最近 10 場**對局
   - **遊戲中**：雙方計分板（KDA、裝備、裝備總價推算的經濟）、雙方總經濟與差距、即時事件、自己的血量/魔力
   - **我方推薦出裝**：只從該英雄 op.gg ARAM 常出清單挑，再依敵方實際裝備的物理/魔法比例、護甲/魔抗/吸血佔比把針對裝往前排；每件都附根據（選用率、勝率、觸發條件的數字）
   - **敵方下一件預測**：手上零件湊齊度為主，op.gg 常出裝決定順序
   - **結算**：輸出、承受、治療、護盾、控場時間、金錢、裝備、海克斯強化，各欄最高者標示
-- `/lol 名字#tag` 不開畫面，改成查這位玩家的牌位與熟練度（Riot API）
+- `/lol 名字#tag` 查這位玩家的牌位、熟練度與最近對戰（Riot API）
+- `/lol-live [名字#tag]` 查任何玩家**正在打的對局**（Riot spectator API）：雙方英雄、召喚師技能、主符文、禁用、每人牌位／等級／該英雄熟練度／近 3 場；玩家 PC 的客戶端剛好在打同一場時再補即時 K/D/A、CS、裝備
 - 資料來源是**玩家 PC 上的 LoL 客戶端**（經 SSH 只送 GET，不會在 PC 上寫任何東西），原因見「注意事項」
 
 ### 🔫 Valorant 對戰資訊與戰績
-- `/valo-live` 在語音頻道開啟即時畫面（同一個 Activity），借用玩家 PC 上 Riot Client 的登入直接查 Riot 的對局資料：
+- Activity 的 Valorant 畫面（`/act`）借用玩家 PC 上 Riot Client 的登入直接查 Riot 的對局資料：
   - **選角**：隊友 5 人；**讀取畫面後**：雙方 10 人
   - 每人一列（像遊戲內 TAB，但更多）：特務、名字、等級、競技牌位 + RR、歷史最高、本季競技勝率、**目前模式最近 10 場**勝率、近 5 場勝敗 / KDA / ACS / ADR / 爆頭率 / 首殺，右側貼出近 5 場對局
   - 頂列顯示即時回合比數；**賽後**自動變成計分板（K/D/A、ACS、ADR、MVP）
-  - 開隱藏名字的玩家只藏名字，牌位與戰績照查；`/valo-live text:True` 改貼一則文字
+  - 開隱藏名字的玩家只藏名字，牌位與戰績照查
+- `/valo-live [名字#tag]` 純文字版：PC 的 Riot Client 有登入就查**自己**的對局（雙方 10 人牌位、近況；Riot 不給查別人的對局，填別人只在他跟你同場時顯示）；查不到對局或電腦沒開就退回 HenrikDev 的牌位與近況
 - `/valo 名字#tag` 查牌位、歷史最高與最近對戰（HenrikDev）
 - `/valo-track` 追蹤玩家，打完一場自動把戰績發到指定頻道
 
@@ -94,7 +96,7 @@ python bot.py
 ```
 > 啟動後會自動把 slash command 同步到所在的每個伺服器；也可在伺服器內用 `!sync` 手動重新同步。
 
-### 5.（選用）設定同步歌詞 `/lyrics`
+### 5.（選用）設定 Activity `/act`（同步歌詞／對局畫面）
 Discord Activity 必須透過**公開的 HTTPS 網址**載入，bot 內建的歌詞伺服器只聽 `127.0.0.1:8765`，需要用 [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/) 之類的工具對外：
 
 ```
@@ -120,12 +122,12 @@ Discord ──→ https://lyrics.你的網域 ──(Cloudflare Tunnel)──→
 2. **Developer Portal** → 你的 App → Activities
    - Settings：開啟 **Enable Activities**
    - URL Mappings：Root Mapping `/` → `lyrics.你的網域`
-3. 重啟 bot，在語音頻道用 `/lyrics` 開啟。
+3. 重啟 bot，在語音頻道用 `/act` 開啟。
 
 > 開啟 Activities 後 Discord 會自動建立一個全域的 Entry Point 指令（`launch`），`bot.py` 清理全域指令時會跳過它。
 
 ### 6.（選用）設定 LoL `/lol` 與 Valorant `/valo`、`/valo-live`
-`/lol`、`/valo-live` 的即時畫面跟 `/lyrics` 共用同一個 Activity，先完成步驟 5。
+即時畫面都在同一個 Activity（`/act`），先完成步驟 5。
 
 1. **讓 bot 主機能 SSH 到玩家的 Windows PC**（免密碼金鑰登入），在 `~/.ssh/config` 設一個別名（預設叫 `pc`）。
    bot 會在 PC 上用 `curl` 讀客戶端的 lockfile 與本機 API（LoL：LCU、`127.0.0.1:2999` Live Client Data；Valorant：Riot Client 的 token 與 presence），**只讀不寫**。
@@ -169,15 +171,14 @@ cd activity && npm install && npm run build
 | `/volume <0-100>` | 調整音量。 |
 | `/info` | 顯示 Bot 連線與播放狀態。 |
 | `/come` | 把 Bot 移到你所在的語音頻道（不中斷播放）。 |
-| `/lyrics` | 在語音頻道開啟同步歌詞畫面（需先完成上方步驟 5）。 |
-| `/act` | 開啟 Activity 自動模式：有 LoL / Valorant 對局就顯示對局，否則顯示歌詞。 |
+| `/act` | 開啟 Activity（需先完成上方步驟 5）：有 LoL / Valorant 對局就顯示對局，否則顯示歌詞。 |
 
 ### ⚔️ LoL / 🔫 Valorant
 | 指令 | 說明 |
 |------|------|
-| `/lol` | 在語音頻道開啟 LoL 即時對戰資訊畫面（需完成步驟 5、6）。 |
-| `/lol <名字#tag>` | 查這位玩家的牌位與英雄熟練度。 |
-| `/valo-live` | 在語音頻道開啟 Valorant 即時對戰資訊畫面（需完成步驟 5、6）；`text:True` 改貼文字。 |
+| `/lol <名字#tag>` | 查這位玩家的牌位、英雄熟練度與最近對戰。 |
+| `/lol-live [名字#tag]` | 查玩家正在打的 LoL 對局（不填 = 你電腦上登入的帳號）。 |
+| `/valo-live [名字#tag]` | 查你目前的 Valorant 對局（需 PC 的 Riot Client 登入；Riot 不給查別人的對局）；查不到就顯示 HenrikDev 的牌位與近況。 |
 | `/valo <名字#tag>` | 查 Valorant 玩家的牌位與最近戰績。 |
 | `/valo-track add <名字#tag>` | 追蹤玩家，打完一場自動把戰績發到這個頻道。 |
 | `/valo-track remove <名字#tag>` | 取消追蹤。 |
@@ -250,13 +251,14 @@ discordbot/
 ├── bot.py                  # Bot 主程式：啟動、載入 cogs、slash command 同步
 ├── cogs/
 │   ├── music.py            # 音樂播放
-│   ├── lyrics.py           # /lyrics：歌詞伺服器、WebSocket、歌詞查詢流程
+│   ├── lyrics.py           # /act：Activity 伺服器、WebSocket、歌詞查詢流程
 │   ├── lyrics_sources.py   # 網易雲 / QQ 音樂 / 酷狗 歌詞來源
 │   ├── lyrics_match.py     # 歌名清理、歌手比對、LRC 解析（純函式）
 │   ├── lol.py              # /lol：輪詢玩家 PC 客戶端、op.gg 出裝、Activity 資料推送
 │   ├── lol_parse.py        # LoL 資料整理、經濟、出裝預測與推薦（純函式）
 │   ├── riot_api.py         # Riot API（牌位、熟練度、帳號查詢）
 │   ├── valo.py             # /valo、/valo-track、/valo-live（對局輪詢、Activity 資料推送）
+│   ├── lol_live_parse.py   # /lol-live：spectator-v5 對局整理
 │   ├── valo_parse.py       # Valorant 戰績整理（純函式）
 │   ├── valo_live.py        # Riot Client token → GLZ / PD 對局、牌位、對戰紀錄
 │   ├── valo_live_parse.py  # 對局 / 賽後資料整理（純函式）

@@ -138,16 +138,21 @@ class RiotLink:
 
     # ── 對局 ──
     async def current_match(self) -> Optional[tuple[str, dict]]:
-        """回 ('pregame'|'coregame', 對局資料)，不在對局中回 None。"""
+        """自己的對局：回 ('pregame'|'coregame', 對局資料)，不在對局中回 None。"""
         if not await self.token():
             return None
-        me = self.puuid
-        core = await self.glz(f'/core-game/v1/players/{me}')
+        return await self.match_of(self.puuid)
+
+    async def match_of(self, puuid: str) -> Optional[tuple[str, dict]]:
+        """某位玩家正在打的對局。實測(2026-10-11)：別人的 puuid 一律 403，只有登入者自己查得到。"""
+        if not puuid or not await self.token():
+            return None
+        core = await self.glz(f'/core-game/v1/players/{puuid}')
         if core and core.get('MatchID'):
             m = await self.glz(f'/core-game/v1/matches/{core["MatchID"]}')
             if m:
                 return 'coregame', m
-        pre = await self.glz(f'/pregame/v1/players/{me}')
+        pre = await self.glz(f'/pregame/v1/players/{puuid}')
         if pre and pre.get('MatchID'):
             m = await self.glz(f'/pregame/v1/matches/{pre["MatchID"]}')
             if m:

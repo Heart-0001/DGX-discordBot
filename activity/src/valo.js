@@ -241,7 +241,9 @@ function showMsg(text) {
 function onImgError(e) {
   const t = e.target;
   if (t.tagName !== 'IMG') return;
-  badImg.add(t.getAttribute('src'));
+  const src = t.getAttribute('src');
+  badImg.add(src);
+  setTimeout(() => badImg.delete(src), 30000);   // 可能只是 bot 第一次抓圖逾時，30 秒後下次重畫再試
   const ph = t.parentElement;
   t.remove();
   if (ph) { ph.textContent = t.dataset.fb || ''; ph.classList.add('noimg'); }

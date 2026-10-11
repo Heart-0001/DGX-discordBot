@@ -25,6 +25,8 @@ from discord import app_commands
 from discord.ext import commands
 
 from cogs.riot_api import RiotApi, league_to_ranks
+from cogs.lol_live_parse import (RECENT_N, fmt_length, live_text, mastery_text, match_live_players, parse_spectator,
+                                 rank_text, recent_text)
 from cogs.lol_parse import (BUILD_SLOTS, EOG_PHASES, eog_missing, enrich_eog, INGAME_PHASES, parse_champselect, parse_eog, parse_live,
                             parse_opgg_build, parse_profile, queue_name, riot_id, session_champ_puuids,
                             session_puuids)
@@ -155,7 +157,11 @@ class Static:
         spells = (await self._get_json(f'{DDRAGON}/cdn/{ver}/data/zh_TW/summoner.json'))['data']
         augs = await self._get_json(f'{CD_GAME_DATA}/zh_tw/v1/cherry-augments.json')
         items = (await self._get_json(f'{DDRAGON}/cdn/{ver}/data/zh_TW/item.json'))['data']
+        runes = await self._get_json(f'{DDRAGON}/cdn/{ver}/data/zh_TW/runesReforged.json')
         d = {
+            # /lol-live 顯示主符文用
+            'perkStyles': {str(r['id']): r['name'] for r in runes},
+            'perkNames': {str(x['id']): x['name'] for r in runes for slot in r.get('slots', []) for x in slot.get('runes', [])},
             'champIdToKey': {c['key']: c['id'] for c in champs.values()},
             'champKeyToId': {c['id'].lower(): int(c['key']) for c in champs.values()},
             'champNames': {c['key']: c['name'] for c in champs.values()},
@@ -696,58 +702,38 @@ class LolCog(commands.Cog):
             pass
 
     # ── slash command ──
-    @app_commands.command(name='lol', description='開啟 LoL 對戰資訊畫面；填玩家（名字#tag）則改成查這個人的戰績')
-    @app_commands.describe(player='要查的玩家，例如 名字#1234（不填 = 在語音頻道開即時畫面）')
-    async def lol(self, interaction: discord.Interaction, player: Optional[str] = None):
-        if player:
-            await self._lookup(interaction, player)
-            return
-        if not interaction.user.voice:
-            await interaction.response.send_message('❌ 請先加入語音頻道再開 LoL 畫面', ephemeral=True)
-            return
-        set_mode = getattr(self.bot, 'set_activity_mode', None)
-        if set_mode:
-            set_mode(interaction, 'lol')
-        # Activity 已經開著 → 不再叫 Discord 開(會留下一行空的「使用了 /lol」)，畫面 3 秒內自己切
-        if getattr(self.bot, 'activity_open', lambda i: False)(interaction):
-            await interaction.response.send_message('✅ 已切換成 LoL 畫面', ephemeral=True)
-            return
-        try:
-            await interaction.response.launch_activity()
-        except discord.HTTPException as e:
-            log.error(f'launch_activity 失敗: {e!r}')
-            await interaction.response.send_message(
-                '❌ 無法開啟 Activity。請確認 Developer Portal 已開啟 Activities 並設好 URL Mapping。',
-                ephemeral=True)
-
-    async def _lookup(self, interaction: discord.Interaction, player: str):
-        """用 Riot API 查任何人(不需要 PC)：牌位、常用英雄、最近 5 場一般/積分。"""
-        name, _, tag = player.strip().partition('#')
-        if not name or not tag:
-            await interaction.response.send_message('❌ 格式是 `名字#tag`，例如 `名字#1234`', ephemeral=True)
-            return
+    # 即時畫面一律由 /act(Activity)開；這裡的指令都是純文字，API 為主、玩家 PC 的客戶端有開就多補一層
+    @app_commands.command(name='lol', description='查 LoL 玩家的牌位、英雄熟練度與最近對戰')
+    @app_commands.describe(player='玩家，例如 名字#1234')
+    async def lol(self, interaction: discord.Interaction, player: str):
         if not (self.api and self.api.enabled):
             await interaction.response.send_message('❌ 沒有設定可用的 Riot API key', ephemeral=True)
             return
         await interaction.response.defer(thinking=True)
+        acc = await self._account(interaction, player)
+        if acc:
+            await interaction.followup.send(embed=await self._profile_embed(acc))
+
+    async def _account(self, interaction: discord.Interaction, player: str) -> Optional[dict]:
+        name, _, tag = player.strip().partition('#')
+        if not name or not tag:
+            await interaction.followup.send('❌ 格式是 `名字#tag`，例如 `名字#1234`')
+            return None
         acc = await self.api.account(name.strip(), tag.strip())
         if not acc:
             await interaction.followup.send(f'❌ 找不到玩家 `{discord.utils.escape_markdown(player)}`')
-            return
+        return acc
+
+    async def _profile_embed(self, acc: dict) -> discord.Embed:
+        """用 Riot API 查任何人(不需要 PC)：牌位、常用英雄、最近 5 場一般/積分。"""
+        name, tag = acc.get('gameName', ''), acc.get('tagLine', '')
         pu = acc['puuid']
         summ, entries, top, ids = await asyncio.gather(
             self.api.summoner(pu), self.api.league(pu), self.api.top_mastery(pu, 3), self.api.match_ids(pu, 5))
         matches = await asyncio.gather(*(self.api.match(m) for m in ids or []))
         champ_names = self.static.data['champNames']
-
-        def rank_text(r):
-            if not r:
-                return '未排名'
-            wr = r['w'] * 100 // max(1, r['w'] + r['l'])
-            return f"{TIER_ZH.get(r['tier'], r['tier'])} {r['division']} {r['lp']} LP（{r['w']}勝 {r['l']}敗，{wr}%）"
-
         ranks = league_to_ranks(entries)
-        emb = discord.Embed(title=f"{acc.get('gameName', name)}#{acc.get('tagLine', tag)}",
+        emb = discord.Embed(title=f"{name}#{tag}",
                             color=0xC8AA6E,
                             description=f"等級 {(summ or {}).get('summonerLevel', '?')}")
         if summ and summ.get('profileIconId') is not None:
@@ -772,7 +758,142 @@ class LolCog(commands.Cog):
                          f"　{me.get('kills')}/{me.get('deaths')}/{me.get('assists')}"
                          f"　{queue_name(info.get('queueId'))}　{when}")
         emb.add_field(name='最近對戰（大混戰不在 Riot API 裡）', value='\n'.join(lines) or '沒有資料', inline=False)
-        await interaction.followup.send(embed=emb)
+        # 客戶端層：玩家 PC 的客戶端剛好查過這個人(同場)就補近 100 場勝率(含大混戰)
+        prof = self._client_profile(name, tag)
+        if prof and prof.get('recentAll'):
+            ra = prof['recentAll']
+            emb.add_field(name='客戶端近 100 場（含大混戰）', inline=False,
+                          value=f"{ra['w']}勝{ra['l']}敗 {ra['w'] * 100 // max(1, ra['w'] + ra['l'])}%")
+        emb.set_footer(text='資料來源：Riot API' + ('＋玩家電腦的客戶端' if prof else ''))
+        return emb
+
+    def _client_profile(self, name: str, tag: str) -> Optional[dict]:
+        pu = self._name_to_puuid.get(riot_id(name, tag).lower())
+        hit = self._profiles.get(pu) if pu else None
+        return hit[1] if hit else None
+
+    # ── /lol-live：任何玩家正在打的對局 ──
+    @app_commands.command(name='lol-live', description='查玩家目前正在打的 LoL 對局：雙方英雄、牌位、熟練度、近況')
+    @app_commands.describe(player='玩家，例如 名字#1234（不填 = 你電腦上登入的帳號）')
+    async def lol_live(self, interaction: discord.Interaction, player: Optional[str] = None):
+        if not (self.api and self.api.enabled):
+            await interaction.response.send_message('❌ 沒有設定可用的 Riot API key', ephemeral=True)
+            return
+        await interaction.response.defer(thinking=True)
+        if not player:
+            # 沒填 → 看玩家 PC 上客戶端登入的是誰(客戶端沒開就沒辦法)
+            me = await self.pc.lcu('/lol-summoner/v1/current-summoner', timeout=6) if self.state.get('_raw_phase') else None
+            if not isinstance(me, dict) or not me.get('gameName'):
+                await interaction.followup.send('❌ 沒填玩家，而且你電腦上的 LoL 客戶端沒開，不知道要查誰。請填 `名字#tag`')
+                return
+            player = f"{me['gameName']}#{me.get('tagLine', '')}"
+        acc = await self._account(interaction, player)
+        if not acc:
+            return
+        rid = f"{acc.get('gameName', '')}#{acc.get('tagLine', '')}"
+        game = await self.api.active_game(acc['puuid'])
+        if not game:
+            await interaction.followup.send(
+                f'**{discord.utils.escape_markdown(rid)}** 目前沒有在對局中（Riot 的即時資料大約慢 1～2 分鐘，自訂對戰查不到）。'
+                f'以下是這位玩家的戰績：', embed=await self._profile_embed(acc))
+            return
+        data = parse_spectator(game, self.static.data)
+        players = [p for t in data['teams'] for p in t['players'] if p['puuid'] and not p['bot']]
+        # API 層：每人牌位 / 等級 / 這隻英雄的熟練度 / 近幾場，最多等 25 秒(額度不夠的先顯示有拿到的)
+        jobs = {p['puuid']: asyncio.ensure_future(self._enrich_live(p)) for p in players}
+        live_task = asyncio.ensure_future(self._live_for(players))   # 客戶端層(PC 沒開會很快回 None)
+        done, pending = await asyncio.wait(list(jobs.values()) + [live_task], timeout=25)
+        for t in pending:
+            t.cancel()
+        partial = sum(1 for t in jobs.values() if t in pending)
+        live = live_task.result() if live_task in done and not live_task.exception() else {}
+        await interaction.followup.send(embed=self._live_embed(data, acc['puuid'], live, partial))
+
+    async def _enrich_live(self, p: dict):
+        pu, cid = p['puuid'], p['championId']
+        try:
+            entries, summ, mast, ids = await asyncio.gather(
+                self.api.league(pu), self.api.summoner(pu), self.api.mastery(pu, cid), self.api.match_ids(pu, RECENT_N))
+            p['ranks'] = league_to_ranks(entries)
+            p['level'] = (summ or {}).get('summonerLevel')
+            p['mastery'] = mastery_text(mast)
+            matches = await asyncio.gather(*(self.api.match(m) for m in ids or []))
+            p['recent'] = recent_text(matches, pu, self.static.data['champNames'])
+        except Exception as e:
+            log.warning(f'🎮 /lol-live 補玩家資料失敗 {pu[:8]}: {e!r}')
+
+    async def _live_for(self, players: list[dict]) -> dict:
+        """客戶端層：玩家 PC 的客戶端正在遊戲中、而且就是這場(Riot ID 對得上一半以上) → Live Client 的每人即時數據。"""
+        if self.state.get('_raw_phase') not in INGAME_PHASES:
+            return {}
+        d = await self.pc.live()
+        if not isinstance(d, dict) or not d.get('allPlayers'):
+            return {}
+        m = match_live_players(d, players)
+        return m if len(m) * 2 >= len(players) else {}
+
+    def _live_embed(self, data: dict, target: str, live: dict, partial: int) -> discord.Embed:
+        esc = discord.utils.escape_markdown
+        items = self.static.data.get('items') or {}
+        title = f"🎮 {data['queue']}・{data['map']}"
+        if data['length']:
+            title += f"　已進行 {fmt_length(data['length'])}"
+        emb = discord.Embed(title=title, color=0xC8AA6E)
+        desc = []
+        if data['started']:
+            desc.append(f"開局 {discord.utils.format_dt(data['started'], 'R')}")
+        for t in data['teams']:
+            if data['bans'].get(t['id']):
+                desc.append(f"{t['name']}禁用：{'、'.join(data['bans'][t['id']])}")
+        emb.description = '\n'.join(desc) or None
+        for t in data['teams']:
+            lines = []
+            for p in t['players']:
+                who = '🤖 電腦' if p['bot'] else (esc(p['riotId']) or '🙈 隱藏')
+                mark = '▶ ' if p['puuid'] == target else ''
+                head = f"{mark}**{esc(p['champion'])}** {who}"
+                extra = '　'.join(x for x in ('/'.join(p['spells']), p['keystone']) if x)
+                if extra:
+                    head += f"　{extra}"
+                lines.append(head)
+                if 'ranks' in p:
+                    r = p['ranks']
+                    row = f"　　單雙 {rank_text(r['solo'])}"
+                    if r['flex']:
+                        row += f"　彈性 {rank_text(r['flex'])}"
+                    if p.get('level'):
+                        row += f"　Lv{p['level']}"
+                    if p.get('mastery'):
+                        row += f"　{p['mastery']}"
+                    lines.append(row)
+                    if p.get('recent'):
+                        lines.append(f"　　{p['recent']}")
+                elif not p['bot']:
+                    lines.append('　　（資料還沒拿到）')
+                lv = live_text(live.get(p['puuid']), items)
+                if lv:
+                    lines.append(f"　　⚔ {lv}")
+            self._add_lines(emb, t['name'], lines)
+        src = '資料來源：Riot API（spectator）'
+        if live:
+            src += '＋你電腦的客戶端（即時 K/D/A、裝備）'
+        if partial:
+            src += f'；{partial} 人資料不完整（API 額度，稍後再查）'
+        emb.set_footer(text=src)
+        return emb
+
+    @staticmethod
+    def _add_lines(emb: discord.Embed, name: str, lines: list[str]):
+        """embed 欄位上限 1024 字 → 太長就拆成好幾欄(後面的欄名留空)。"""
+        chunk, first = [], True
+        for ln in lines + [None]:
+            if ln is None or len('\n'.join(chunk + [ln])) > 1024:
+                if chunk:
+                    emb.add_field(name=name if first else '\u200b', value='\n'.join(chunk), inline=False)
+                    first = False
+                chunk = []
+            if ln is not None:
+                chunk.append(ln[:1024])
 
 
 TIER_ZH = {'IRON': '鐵牌', 'BRONZE': '銅牌', 'SILVER': '銀牌', 'GOLD': '金牌', 'PLATINUM': '白金',

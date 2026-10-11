@@ -428,10 +428,6 @@ class LyricsCog(commands.Cog):
     async def act(self, interaction: discord.Interaction):
         await self._open(interaction, 'auto', '✅ 已切換成自動模式')
 
-    @app_commands.command(name='lyrics', description='在語音頻道開啟同步歌詞畫面（Discord Activity）')
-    async def lyrics(self, interaction: discord.Interaction):
-        await self._open(interaction, 'lyrics', '✅ 已切換成歌詞畫面')
-
     async def _open(self, interaction: discord.Interaction, mode: str, switched: str):
         if not interaction.user.voice:
             await interaction.response.send_message('❌ 請先加入語音頻道再開 Activity', ephemeral=True)

@@ -60,7 +60,7 @@ def test_pregame_ally_only():
 
 def test_match_summaries_and_recent_line():
     from cogs.valo_live_parse import match_summaries, recent_line
-    d = {'matchInfo': {'queueID': 'hurm', 'gameStartMillis': 5},
+    d = {'matchInfo': {'queueID': 'hurm', 'gameStartMillis': 5, 'seasonId': 'act9'},
          'teams': [{'teamId': 'Red', 'won': True}, {'teamId': 'Blue', 'won': False}],
          'roundResults': [{'firstBloodPlayer': 'me', 'playerStats': [
              {'subject': 'me', 'damage': [{'damage': 50, 'headshots': 2, 'bodyshots': 1, 'legshots': 0},
@@ -70,7 +70,7 @@ def test_match_summaries_and_recent_line():
                      {'subject': 'x', 'teamId': 'Blue', 'characterId': 'a2', 'stats': {'kills': 1, 'deaths': 9, 'assists': 0}}]}
     s = match_summaries(d, CONTENT)
     assert s['me'] == {'w': True, 'k': 10, 'd': 5, 'a': 2, 'score': 300, 'rounds': 1, 'dmg': 70, 'hs': 2, 'bs': 3, 'ls': 1,
-                       'fb': 1, 'agent': '傑特', 'agentId': 'a1', 'queue': '團隊死鬥', 't': 5}
+                       'fb': 1, 'agent': '傑特', 'agentId': 'a1', 'queue': '團隊死鬥', 't': 5, 'season': 'act9'}
     assert s['x']['hs'] == 0 and s['x']['fb'] == 0
     assert s['x']['w'] is False
     dm = match_summaries({'matchInfo': {'queueID': 'deathmatch'}, 'teams': [{'teamId': 'me', 'won': True}],
@@ -202,3 +202,28 @@ def test_henrik_to_riot_roundtrip():
     assert me['name'] == 'Me' and me['k'] == 1 and me['dmg'] == 150 and me['hs'] == 100 and me['weapon'] == '幻象'
     assert me['econ'] == 3900 and me['casts'] == [1, 0, 2, 0] and me['tier'] == 7 and me['level'] == 5 and me['party'] == ''
     assert e['rounds'][0]['ceremony'] == '無懈可擊' and e['rounds'][0]['fb'] == 'me' and e['teams'][1]['players'][0]['agent'] == '菲尼克斯'
+
+
+def test_competitive_stops_at_previous_act():
+    """本 act 競技：對戰紀錄新的在前，碰到上個 act 的就停、不往後看。"""
+    import asyncio
+    from cogs.valo_live import RiotLink
+    link = RiotLink.__new__(RiotLink)
+    link._sem = asyncio.Semaphore(2)
+    calls = []
+
+    async def pd(path):
+        calls.append(path)
+        return {'History': [{'MatchID': 'm1'}, {'MatchID': 'm2'}, {'MatchID': 'm3'}]}
+    link.pd = pd
+    summs = {'m1': {'me': {'season': 'cur', 'k': 1}}, 'm2': {'me': {'season': 'old', 'k': 2}},
+             'm3': {'me': {'season': 'cur', 'k': 3}}}
+
+    async def ms(mid, content):
+        return summs[mid]
+    link.match_summary = ms
+    out = asyncio.run(link.competitive('me', {}, 'cur', n=5))
+    assert out == [{'season': 'cur', 'k': 1}]
+    assert 'queue=competitive' in calls[0] and 'endIndex=6' in calls[0]
+    summs['m2'] = None
+    assert asyncio.run(link.competitive('me', {}, 'cur', n=5)) is None

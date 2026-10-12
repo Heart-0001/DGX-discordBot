@@ -103,6 +103,7 @@ def match_summaries(d: dict, content: dict) -> dict[str, dict]:
             'agent': agents.get((p.get('characterId') or '').lower(), {}).get('name', '?'),
             'agentId': (p.get('characterId') or '').lower(),
             'queue': QUEUE_ZH.get(queue, queue or '?'), 't': info.get('gameStartMillis', 0),
+            'season': info.get('seasonId') or '',
         }
     return out
 

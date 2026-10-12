@@ -37,6 +37,7 @@ CONTENT_TTL = 3600
 MMR_TTL = 300
 RECENT = 5               # 每人抓最近幾場(每場一次請求、約 270KB，所以不多抓)
 MODE_RECENT = 10         # 「當前模式」戰績看最近幾場(mmr 裡非競技模式的本季勝場實測是壞的，只能自己算)
+COMP_RECENT = 20         # 「競技」那組數據：本 act 最近幾場競技(整個 act 可能上百場，每場一次請求，抓不完)
 MATCH_TTL = 3600
 PD_GAP = 0.25            # 秒：match-details 連發太快會 429(實測 50 個一起發就中)，每個請求間隔
 RETRY_429 = 3
@@ -253,6 +254,29 @@ class RiotLink:
         if any(s is None for s in summs):
             return None
         return [s[puuid] for s in summs if s.get(puuid)][:n]
+
+    async def competitive(self, puuid: str, content: dict, season: str, n: int = COMP_RECENT) -> Optional[list[dict]]:
+        """本 act 最近 n 場競技(新的在前；不是本 act 的就停)。有一場查不到就回 None。"""
+        h = await self._paced(f'/match-history/v1/history/{puuid}?startIndex=0&endIndex={n + 1}&queue=competitive')
+        if h is None:
+            return None
+        mids = [x['MatchID'] for x in h.get('History') or [] if x.get('MatchID')]
+        summs = await asyncio.gather(*[self.match_summary(m, content) for m in mids])
+        if any(s is None for s in summs):
+            return None
+        out = []
+        for s in summs:
+            g = s.get(puuid)
+            if not g:
+                continue
+            if season and g.get('season') and g['season'] != season:
+                break
+            out.append(g)
+        return out[:n]
+
+    async def lookup_comp(self, puuids: list[str], content: dict, season: str) -> dict:
+        res = await asyncio.gather(*[self.competitive(p, content, season) for p in puuids])
+        return dict(zip(puuids, res))
 
     async def lookup_basic(self, puuids: list[str]) -> tuple[dict, dict, str]:
         """名字、mmr、本季 id：都很快(一兩秒)，先推給畫面。"""

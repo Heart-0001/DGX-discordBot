@@ -232,6 +232,7 @@ html.mode-lol #bg, html.mode-lol #app, html.mode-lol #offset { display: none; }
 #lol .pc-wr .compact { display: none; }
 html.pip #lol .pc-wr .compact { display: inline; }
 #lol .hid { color: var(--mut); font-style: italic; }
+#lol .hid-badge { display: inline-block; font-size: 0.7em; line-height: 1; padding: 1px 3px; margin-right: 3px; border-radius: 3px; background: var(--mut); color: #000; vertical-align: middle; }
 /* 選角：最近 10 場 */
 #lol .ph.champ.xs { width: 1.6em; height: 1.6em; border-radius: 4px; border-width: 1px; font-size: .8em; }
 #lol .pc-games { width: 100%; text-align: left; font-size: .8em; }
@@ -549,11 +550,17 @@ html.pip #lol.valo .pc-chips { display: none; }
 /* 對局中：TAB 式表格 */
 #lol.valo .live-body { display: flex; flex-direction: column; gap: 8px; overflow: auto; }
 #lol.valo .lrow { display: grid; align-items: center; gap: 8px; padding: 3px 10px; border-top: 1px solid rgba(255, 255, 255, .05); font-variant-numeric: tabular-nums;
-  grid-template-columns: var(--row) minmax(7em, 1.1fr) minmax(7em, .9fr) minmax(9.5em, 1fr) 3.6em 3em 3em 3em 3.2em 2.6em minmax(0, 2fr); }
+  grid-template-columns: var(--row) minmax(6.5em, 1fr) minmax(6.5em, .8fr) minmax(6.5em, .8fr) 3em 3em 3em 3.2em 2.6em minmax(7.5em, .9fr) 3.6em 3em 3em 3em 3.2em 2.6em minmax(0, 1.6fr); }
+/* 競技那組(grp-c)與近 5 場那組(grp-r)用底色分開 */
+#lol.valo .lrow .grp-c { background: rgba(255, 70, 85, .07); }
+#lol.valo .lrow .grp-r { background: rgba(79, 163, 255, .07); }
+#lol.valo .lrow.lhead .grp-c { color: #ffb0b8; }
+#lol.valo .lrow.lhead .grp-r { color: #bcd9ff; }
+#lol.valo .lrow .c-season, #lol.valo .lrow .c-mode { line-height: 1.15; }
 /* 表頭字小但欄寬用 em 算 → 字體只縮在格子內，不然表頭跟資料列對不齊 */
 #lol.valo .lrow.lhead, #lol.valo .erow.lhead { color: var(--mut); font-size: inherit; height: auto; border-top: none; padding-top: 1px; padding-bottom: 1px; }
 #lol.valo .lrow.lhead > span, #lol.valo .erow.lhead > span { font-size: .8em; }
-#lol.valo .lrow.lhead .c-kda, #lol.valo .lhead span:nth-child(n+5):nth-child(-n+10) { text-align: center; }
+#lol.valo .lrow.lhead .c-kda, #lol.valo .lrow.lhead span:nth-child(n+5):nth-child(-n+9), #lol.valo .lrow.lhead span:nth-child(n+11):nth-child(-n+16) { text-align: center; }
 #lol.valo .lrow { height: auto; min-height: var(--row); }
 #lol.valo .lrow.lhead, #lol.valo .erow.lhead { min-height: 0; }
 #lol.valo .lrow.me { background: rgba(255, 70, 85, .12); }
@@ -578,13 +585,15 @@ html.pip #lol.valo .pc-chips { display: none; }
 #lol.valo .hg .g-kda b { color: #ff7a7a; font-weight: 600; }
 #lol.valo .team-h small { letter-spacing: 0; font-weight: 400; color: var(--mut); }
 @media (max-width: 1400px) { #lol.valo .hg small { display: none; } }
-@media (max-width: 980px) { #lol.valo .lrow .c-hist, #lol.valo .lhead span:last-child { display: none; } #lol.valo .lrow { grid-template-columns: var(--row) minmax(7em, 1.2fr) minmax(7em, 1fr) minmax(6.5em, .9fr) 3.6em 3em 3em 3em 3.2em 2.6em; } }
+/* 窄一點：先收近 5 場的小卡；再窄：收目前模式；兩組數據都留著 */
+@media (max-width: 1500px) { #lol.valo .lrow .c-hist, #lol.valo .lrow.lhead span:last-child { display: none; } #lol.valo .lrow { grid-template-columns: var(--row) minmax(6.5em, 1.2fr) minmax(6.5em, 1fr) minmax(6.5em, .9fr) 3em 3em 3em 3.2em 2.6em minmax(7.5em, 1fr) 3.6em 3em 3em 3em 3.2em 2.6em; } }
+@media (max-width: 1150px) { #lol.valo .lrow .c-mode, #lol.valo .lrow.lhead span:nth-child(10) { display: none; } #lol.valo .lrow { grid-template-columns: var(--row) minmax(6.5em, 1.2fr) minmax(6.5em, 1fr) minmax(6.5em, .9fr) 3em 3em 3em 3.2em 2.6em 3.6em 3em 3em 3em 3.2em 2.6em; } }
 html.pip #lol.valo .live-body { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; overflow: hidden; }
 html.pip #lol.valo .teams { display: contents; }
 html.pip #lol.valo .lrow { grid-template-columns: var(--row) minmax(0, 1fr) auto auto auto; gap: 4px; padding: 0 5px; }
-html.pip #lol.valo .lrow .c-rec { display: none !important; }
+html.pip #lol.valo .lrow .c-rec, html.pip #lol.valo .lrow .grp-c { display: none !important; }
 #lol.valo .eb-meta { flex-direction: row; align-items: center; }
-html.pip #lol.valo .lrow .c-season, html.pip #lol.valo .lrow .c-rec, html.pip #lol.valo .lrow .c-acs, html.pip #lol.valo .lrow .c-adr,
+html.pip #lol.valo .lrow .c-season, html.pip #lol.valo .lrow .c-mode, html.pip #lol.valo .lrow .grp-c, html.pip #lol.valo .lrow .c-rec, html.pip #lol.valo .lrow .c-acs, html.pip #lol.valo .lrow .c-adr,
 html.pip #lol.valo .lrow .c-fb, html.pip #lol.valo .lrow .c-hist, html.pip #lol.valo .lhead, html.pip #lol.valo .lrow .cn, html.pip #lol.valo .c-rank small,
 html.pip #lol.valo .team-h small, html.pip #lol.valo .enemy-ph { display: none; }
 html.pip #lol.valo .lrow .c-rank .rank small { display: none; }

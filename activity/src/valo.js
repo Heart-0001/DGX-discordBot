@@ -1,5 +1,5 @@
 // Valorant 模式：選角(我方 5 人) / 對局中(雙方 10 人) / 賽後計分板 / 閒置。
-// 資料來源：valo/ws 推 {type:'state', phase, match, recents, eog}；圖示走同源 valo/img/*。
+// 資料來源：valo/ws 推 {type:'state', phase, match, recents, modes, comp, eog}；圖示走同源 valo/img/*。
 // 畫在跟 LoL 同一個 #lol 容器裡，加 class "valo" 換成 Valorant 配色。
 
 let root = null;
@@ -129,17 +129,32 @@ function aggregate(gs) {
 const cls3 = (v, hi, lo) => (v == null ? '' : v >= hi ? 'good' : v <= lo ? 'bad' : '');
 const stat = (v, suffix = '') => (v == null ? '<span class="dim">—</span>' : `<b>${v}</b>${suffix}`);
 
-// 對局中：一人一列(像遊戲內 TAB，但多了牌位、本季、近 5 場數據)，第二行貼出近 5 場
+// 數據格子：一組 KDA/ACS/ADR/HS%/首殺(競技那組與近 5 場那組共用)
+function statCells(s, pre) {
+  if (s === undefined) return ['kda', 'acs', 'adr', 'hs', 'fb'].map((k) => `<span class="c-${k} ${pre}"><span class="skel"></span></span>`).join('');
+  if (!s) return ['kda', 'acs', 'adr', 'hs', 'fb'].map((k) => `<span class="c-${k} ${pre}"><span class="dim">—</span></span>`).join('');
+  return `<span class="c-kda ${pre} ${cls3(+s.kda, 1.3, 0.8)}">${stat(s.kda)}</span>
+    <span class="c-acs ${pre} ${cls3(s.acs, 230, 150)}">${stat(s.acs)}</span>
+    <span class="c-adr ${pre} ${cls3(s.adr, 150, 100)}">${stat(s.adr)}</span>
+    <span class="c-hs ${pre} ${cls3(s.hsp, 25, 12)}">${stat(s.hsp, '%')}</span>
+    <span class="c-fb ${pre}">${stat(s.fb)}</span>`;
+}
+
+// 對局中：一人一列(像遊戲內 TAB，但多了牌位、本季、競技與近 5 場兩組數據)，最右貼出近 5 場
 function liveRow(p) {
   const r = p.rank || {};
   const gs = (state.recents || {})[p.puuid];
   const s = gs ? aggregate(gs) : null;
+  const cg = (state.comp || {})[p.puuid];
+  const cs = cg === undefined ? undefined : cg.length ? aggregate(cg) : null;
   const games = gs === undefined ? '<span class="skel wide"></span>' : (gs.length ? gs.map((g) => {
     const res = g.w === null ? 'rm' : g.w ? 'w' : 'l';
     return `<span class="hg ${res}" title="${esc(`${g.queue} · ${ago(g.t)}`)}">${agentImg({ agentId: g.agentId, agent: g.agent }, 'champ xs')}
       <span class="g-r">${g.w === null ? '—' : g.w ? '勝' : '敗'}</span><span class="g-kda">${g.k}/<b>${g.d}</b>/${g.a}</span><small>${esc(g.queue)}</small></span>`;
   }).join('') : '<span class="dim">沒有近期對戰</span>');
-  const season = r.games ? `<span class="wr ${cls3(r.wr, 55, 45)}"><small>競技</small> ${r.wins}勝${r.games - r.wins}敗 <b>${r.wr}%</b></span>` : '<span class="dim"><small>競技</small> —</span>';
+  // 競技那組的勝敗用 mmr 的本季(整個 act)；KDA 等用本 act 最近 20 場競技算
+  const season = r.games ? `<span class="wr ${cls3(r.wr, 55, 45)}">${r.wins}勝${r.games - r.wins}敗 <b>${r.wr}%</b></span>` : '<span class="dim">—</span>';
+  const compN = cg === undefined ? '<span class="skel"></span>' : cg.length ? `<small class="dim">近${cg.length}場</small>` : '<small class="dim">本act沒打</small>';
   // 當前模式：最近 10 場(mmr 裡非競技模式的本季資料是壞的，所以用對戰紀錄算)
   const md = (state.modes || {})[p.puuid];
   const mode = md === undefined ? '<span class="skel"></span>' : !md.n ? `<span class="dim"><small>${esc(state.match.queue)}</small> 沒紀錄</span>`
@@ -150,21 +165,21 @@ function liveRow(p) {
     <span class="c-champ">${agentImg(p, 'champ')}</span>
     <span class="c-name"><span class="nm">${nameHtml(p)}</span><small class="cn">${esc(p.agent)}${p.locked === false ? '…' : ''}${p.level ? ` · Lv ${p.level}` : ''}</small></span>
     <span class="c-rank">${rankHtml(r)}${peak}</span>
-    <span class="c-season" title="本季競技 / 當前模式最近 10 場">${season}<br>${mode}</span>
-    <span class="c-rec" title="近 5 場勝敗">${s ? `<span class="chip w">${s.w}</span><span class="chip l">${s.l}</span>` : '<span class="skel"></span>'}</span>
-    <span class="c-kda ${s ? cls3(+s.kda, 1.3, 0.8) : ''}">${s ? stat(s.kda) : ''}</span>
-    <span class="c-acs ${s ? cls3(s.acs, 230, 150) : ''}">${s ? stat(s.acs) : ''}</span>
-    <span class="c-adr ${s ? cls3(s.adr, 150, 100) : ''}">${s ? stat(s.adr) : ''}</span>
-    <span class="c-hs ${s ? cls3(s.hsp, 25, 12) : ''}">${s ? stat(s.hsp, '%') : ''}</span>
-    <span class="c-fb">${s ? stat(s.fb) : ''}</span>
+    <span class="c-season grp-c" title="本 act 競技勝敗(mmr) / 數據取本 act 最近 20 場競技">${season}<br>${compN}</span>
+    ${statCells(cs, 'grp-c')}
+    <span class="c-mode" title="當前模式最近 10 場">${mode}</span>
+    <span class="c-rec grp-r" title="近 5 場勝敗">${s ? `<span class="chip w">${s.w}</span><span class="chip l">${s.l}</span>` : '<span class="skel"></span>'}</span>
+    ${statCells(s === null ? undefined : s, 'grp-r')}
     <span class="c-hist">${games}</span>
   </div>`;
 }
 
 function teamTable(t, title) {
-  const head = `<div class="lrow lhead"><span></span><span>玩家</span><span>牌位</span><span>本季競技 / 目前模式</span><span>近5</span>
-    <span>KDA</span><span title="近 5 場平均每回合分數">ACS</span><span title="近 5 場平均每回合傷害">ADR</span><span title="近 5 場爆頭率">HS%</span><span title="近 5 場首殺">首殺</span><span>近 5 場</span></div>`;
-  return `<div class="team ${t.mine ? 'ally' : 'enemy'}"><div class="team-h"><span>${title}</span><small>近 5 場數據 · ACS/ADR 只算回合制</small></div>${head}${t.players.map(liveRow).join('')}</div>`;
+  const head = `<div class="lrow lhead"><span></span><span>玩家</span><span>牌位</span>
+    <span class="grp-c">競技 本act</span><span class="grp-c">KDA</span><span class="grp-c" title="競技平均每回合分數">ACS</span><span class="grp-c" title="競技平均每回合傷害">ADR</span><span class="grp-c" title="競技爆頭率">HS%</span><span class="grp-c" title="競技首殺">首殺</span>
+    <span>目前模式</span>
+    <span class="grp-r">近5</span><span class="grp-r">KDA</span><span class="grp-r" title="近 5 場平均每回合分數">ACS</span><span class="grp-r" title="近 5 場平均每回合傷害">ADR</span><span class="grp-r" title="近 5 場爆頭率">HS%</span><span class="grp-r" title="近 5 場首殺">首殺</span><span>近 5 場</span></div>`;
+  return `<div class="team ${t.mine ? 'ally' : 'enemy'}"><div class="team-h"><span>${title}</span><small>競技 = 本 act 最近 20 場競技 · 近 5 場不分模式 · ACS/ADR 只算回合制</small></div>${head}${t.players.map(liveRow).join('')}</div>`;
 }
 
 function viewMatch() {

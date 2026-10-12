@@ -204,7 +204,7 @@ class ValoCog(commands.Cog):
         self.version = 0
         self._changed = asyncio.Event()
         self.state: dict = {'phase': 'offline', 'sub': '啟動中', 'me': '', 'match': None,
-                            'recents': {}, 'modes': {}, 'eog': None, 'score': None}
+                            'recents': {}, 'modes': {}, 'comp': {}, 'eog': None, 'score': None}
         self._live_task: Optional[asyncio.Task] = None
         self._live_mid = ''                        # 目前對局 id
         self._live_hidden: set = set()
@@ -284,20 +284,21 @@ class ValoCog(commands.Cog):
                 delay = LIVE_POLL_OFFLINE
             await asyncio.sleep(delay)
 
-    def _cached(self, puuids: list[str]) -> tuple[dict, dict, dict, dict]:
+    def _cached(self, puuids: list[str]) -> tuple[dict, dict, dict, dict, dict]:
         c = self._lookup_cache
         return ({p: c[p][0] for p in puuids if p in c}, {p: c[p][1] for p in puuids if p in c},
                 {p: c[p][2] for p in puuids if p in c and c[p][2] is not None},
-                {p: c[p][3] for p in puuids if p in c and c[p][3] is not None})
+                {p: c[p][3] for p in puuids if p in c and c[p][3] is not None},
+                {p: c[p][4] for p in puuids if p in c and c[p][4] is not None})
 
-    async def _lookup_players(self, puuids: list[str], queue: str, push) -> tuple[dict, dict, dict, dict]:
-        """同一場裡查過的人不重查。三階段各 push 一次：名字/牌位(1 秒) → 近 5 場(限速，約 20 秒) → 當前模式近 10 場。"""
+    async def _lookup_players(self, puuids: list[str], queue: str, push) -> tuple[dict, dict, dict, dict, dict]:
+        """同一場裡查過的人不重查。四階段各 push 一次：名字/牌位(1 秒) → 近 5 場(限速，約 20 秒) → 當前模式近 10 場 → 本 act 競技近 20 場。"""
         c = self._lookup_cache
         new = [p for p in puuids if p not in c]
         if new:
             names, mmrs, _ = await self.link.lookup_basic(new)
             for p in new:
-                c[p] = [names.get(p) or {}, mmrs.get(p), None, None]
+                c[p] = [names.get(p) or {}, mmrs.get(p), None, None, None]
             push(*self._cached(puuids))
         todo = [p for p in puuids if c[p][2] is None]      # 還沒有、或上次沒查完整(429)
         if todo:
@@ -310,6 +311,12 @@ class ValoCog(commands.Cog):
             modes = await self.link.lookup_recent(todo, self.content, MODE_RECENT, queue)
             for p in todo:
                 c[p][3] = mode_record(modes[p], queue) if modes.get(p) is not None else None
+            push(*self._cached(puuids))
+        todo = [p for p in puuids if c[p][4] is None]
+        if todo:
+            comps = await self.link.lookup_comp(todo, self.content, await self.link.active_season())
+            for p in todo:
+                c[p][4] = comps.get(p)
         return self._cached(puuids)
 
     async def _live_tick(self) -> float:
@@ -344,7 +351,7 @@ class ValoCog(commands.Cog):
                     return LIVE_POLL_MATCH
             self._live_mid, self._live_hidden, self._eog_tries = '', set(), 0
             self._lookup_cache.clear()
-            self._set(phase='eog' if self.state.get('eog') else 'idle', sub='待機中', me=me, match=None, recents={}, modes={}, score=None)
+            self._set(phase='eog' if self.state.get('eog') else 'idle', sub='待機中', me=me, match=None, recents={}, modes={}, comp={}, score=None)
             return LIVE_POLL_IDLE
         kind, m = cur
         mid = m.get('MatchID') or m.get('ID') or ''
@@ -357,9 +364,9 @@ class ValoCog(commands.Cog):
         self._live_hidden |= {p['Subject'] for p in pl or [] if (p.get('PlayerIdentity') or {}).get('Incognito')}
         season = await self.link.active_season()
 
-        def push(names, mmrs, recents, modes):
+        def push(names, mmrs, recents, modes, comp):
             self._set(phase=kind, sub='選角中' if kind == 'pregame' else '對局中', me=me,
-                      match=parse_match(kind, m, names, mmrs, season, self.content, me), recents=recents, modes=modes)
+                      match=parse_match(kind, m, names, mmrs, season, self.content, me), recents=recents, modes=modes, comp=comp)
         push(*self._cached(puuids))
         queue = (self.state['match'] or {}).get('queueId') or ''
         push(*await self._lookup_players(puuids, queue, push))

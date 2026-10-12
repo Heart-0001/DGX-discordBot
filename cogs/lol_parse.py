@@ -37,13 +37,16 @@ def riot_id(name: str, tag: str) -> str:
 
 
 # ── 選角 ──
-def parse_champselect(sess: dict, my_puuid: str) -> dict:
+def parse_champselect(sess: dict, my_puuid: str, champ_puuid: Optional[dict] = None) -> dict:
+    """champ_puuid: {championId: puuid}(來自 gameflow session 的 playerChampionSelections)，
+    用來把選角畫面裡被隱藏的人(puuid 空)對回 puuid。"""
     team = []
     for p in sess.get('myTeam') or []:
         hidden = p.get('nameVisibilityType') == 'HIDDEN' or not p.get('gameName')
+        cid = p.get('championId') or p.get('championPickIntent') or 0
         team.append({
-            # 被隱藏的人連 puuid 都不帶，避免拿去查牌位/戰績(等於破解匿名)
-            'puuid': None if hidden else (p.get('puuid') or None),
+            # 隱藏的人選角 session 不帶 puuid；gameflow session 的 playerChampionSelections 還是有，拿來補
+            'puuid': (champ_puuid or {}).get(cid) if hidden else (p.get('puuid') or None),
             'name': '' if hidden else p.get('gameName', ''),
             'tag': '' if hidden else p.get('tagLine', ''),
             'hidden': hidden,
@@ -61,26 +64,71 @@ def parse_champselect(sess: dict, my_puuid: str) -> dict:
     }
 
 
+def _selections(sess: dict) -> list[dict]:
+    """gameflow session 的 playerChampionSelections：10 格，前半 = teamOne、後半 = teamTwo(2026-10-12 實測)。
+    隱藏名字的玩家 teamOne/teamTwo 裡整個不見，但這裡還是帶 puuid + 選角時的 championId(大混戰換角後會不同)。"""
+    g = (sess or {}).get('gameData') or {}
+    pcs = [c for c in g.get('playerChampionSelections') or [] if c.get('puuid')]
+    one = {p.get('puuid') for p in g.get('teamOne') or []}
+    two = {p.get('puuid') for p in g.get('teamTwo') or []}
+    half = len(pcs) // 2
+    out = []
+    for i, c in enumerate(pcs):
+        side = 'ORDER' if c['puuid'] in one else 'CHAOS' if c['puuid'] in two else ('ORDER' if i < half else 'CHAOS')
+        out.append({'puuid': c['puuid'], 'championId': c.get('championId') or 0, 'side': side,
+                    'hidden': c['puuid'] not in one and c['puuid'] not in two})
+    return out
+
+
 def session_puuids(sess: dict) -> list[str]:
-    """遊戲進行中的 gameflow session：雙方可見玩家的 puuid(被隱藏的人不會出現)。"""
+    """遊戲進行中的 gameflow session：雙方玩家的 puuid(含被隱藏的人，從 playerChampionSelections 補)。"""
     g = (sess or {}).get('gameData') or {}
     out = []
     for t in ('teamOne', 'teamTwo'):
         for p in g.get(t) or []:
             if p.get('puuid'):
                 out.append(p['puuid'])
+    for c in _selections(sess):
+        if c['puuid'] not in out:
+            out.append(c['puuid'])
     return out
 
 
 def session_champ_puuids(sess: dict) -> dict:
-    """gameflow session → {'ORDER:154': puuid}。名字對不上時用「隊伍+英雄」找人(被隱藏的人 session 不帶 puuid)。"""
+    """gameflow session → {'ORDER:154': puuid}。名字對不上時用「隊伍+英雄」找人。
+    teamOne/teamTwo 優先(那是最終英雄)，playerChampionSelections 補隱藏的人(選角時的英雄)。"""
     g = (sess or {}).get('gameData') or {}
     out = {}
+    for c in _selections(sess):
+        if c['championId']:
+            out.setdefault(f"{c['side']}:{c['championId']}", c['puuid'])
     for t, side in (('teamOne', 'ORDER'), ('teamTwo', 'CHAOS')):
         for p in g.get(t) or []:
             if p.get('puuid') and p.get('championId'):
                 out[f"{side}:{p['championId']}"] = p['puuid']
     return out
+
+
+def session_hidden_puuids(sess: dict) -> dict:
+    """gameflow session → {'ORDER': [puuid, ...], 'CHAOS': [...]}：各隊被隱藏名字的玩家。"""
+    out = {'ORDER': [], 'CHAOS': []}
+    for c in _selections(sess):
+        if c['hidden']:
+            out[c['side']].append(c['puuid'])
+    return out
+
+
+def selection_champ_puuids(sess: dict) -> dict:
+    """gameflow session → {championId: puuid}(選角畫面用，英雄重複時不給)。"""
+    out, dup = {}, set()
+    for c in _selections(sess):
+        cid = c['championId']
+        if not cid:
+            continue
+        if cid in out:
+            dup.add(cid)
+        out[cid] = c['puuid']
+    return {k: v for k, v in out.items() if k not in dup}
 
 
 # ── 遊戲中 ──
@@ -449,8 +497,24 @@ def recommend(champ_id, item_ids: list, build: Optional[dict], prof: dict, stati
     return [x[1] for x in out[:n]]
 
 
+def _hidden_puuid(team: str, champ_id: int, champ_to_puuid: Optional[dict], hidden_puuids: Optional[dict],
+                  used: set) -> Optional[str]:
+    """被隱藏的 Live Client 玩家 → puuid。「隊伍+英雄」命中就用；否則該隊剩下唯一一個隱藏 puuid。"""
+    cands = [pu for pu in (hidden_puuids or {}).get(team) or [] if pu not in used]
+    pu = (champ_to_puuid or {}).get(f"{team}:{champ_id}")
+    if pu and pu in cands:
+        used.add(pu)
+        return pu
+    if len(cands) == 1:
+        used.add(cands[0])
+        return cands[0]
+    return None
+
+
 def parse_live(d: dict, static: dict, name_to_puuid: dict, builds: Optional[dict] = None,
-               champ_to_puuid: Optional[dict] = None) -> dict:
+               champ_to_puuid: Optional[dict] = None, hidden_puuids: Optional[dict] = None) -> dict:
+    """hidden_puuids: {'ORDER': [puuid...], 'CHAOS': [...]} 各隊被隱藏名字的人(session_hidden_puuids)。
+    隱藏的人 Live Client 只給英雄名；先用「隊伍+英雄」對，對不到且該隊只剩一個隱藏 puuid 就直接指派。"""
     ap = d.get('activePlayer') or {}
     my_rid = ap.get('riotId', '')
     players = d.get('allPlayers') or []
@@ -463,6 +527,7 @@ def parse_live(d: dict, static: dict, name_to_puuid: dict, builds: Optional[dict
     prof = enemy_profile(enemy_raw, [_champ_from_raw(p, static)['id'] for p in enemy_raw], static)
     st_items = static.get('items') or {}
     map_id = (d.get('gameData') or {}).get('mapNumber')
+    used_hidden: set = set()
     for p in players:
         champ = _champ_from_raw(p, static)
         ally = p.get('team') == my_team
@@ -480,8 +545,9 @@ def parse_live(d: dict, static: dict, name_to_puuid: dict, builds: Optional[dict
             'name': '' if hidden else p.get('riotIdGameName', ''),
             'tag': '' if hidden else p.get('riotIdTagLine', ''),
             'hidden': hidden,
-            'puuid': None if hidden else (name_to_puuid.get(rid.lower())
-                                          or (champ_to_puuid or {}).get(f"{p.get('team')}:{champ['id']}")),
+            'puuid': (_hidden_puuid(p.get('team'), champ['id'], champ_to_puuid, hidden_puuids, used_hidden) if hidden
+                      else (name_to_puuid.get(rid.lower())
+                            or (champ_to_puuid or {}).get(f"{p.get('team')}:{champ['id']}"))),
             'champ': champ,
             'skin': p.get('skinName') or '',
             'level': p.get('level', 0),

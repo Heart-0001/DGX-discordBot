@@ -28,8 +28,8 @@ from cogs.riot_api import RiotApi, league_to_ranks
 from cogs.lol_live_parse import (RECENT_N, fmt_length, live_text, mastery_text, match_live_players, parse_spectator,
                                  rank_text, recent_text)
 from cogs.lol_parse import (BUILD_SLOTS, EOG_PHASES, eog_missing, enrich_eog, INGAME_PHASES, parse_champselect, parse_eog, parse_live,
-                            parse_opgg_build, parse_profile, queue_name, riot_id, session_champ_puuids,
-                            session_puuids)
+                            parse_opgg_build, parse_profile, queue_name, riot_id, selection_champ_puuids,
+                            session_champ_puuids, session_hidden_puuids, session_puuids)
 
 log = logging.getLogger(__name__)
 
@@ -594,6 +594,7 @@ class LolCog(commands.Cog):
             if phase in INGAME_PHASES:
                 self.state['_session_puuids'] = session_puuids(sess)
                 self.state['_session_champs'] = session_champ_puuids(sess)
+                self.state['_session_hidden'] = session_hidden_puuids(sess)
                 self._want_profiles(self.state['_session_puuids'], qid)
             if self.state.get('me') is None:
                 me = await self.pc.lcu('/lol-summoner/v1/current-summoner') or {}
@@ -603,7 +604,11 @@ class LolCog(commands.Cog):
         if phase == 'ChampSelect':
             sess = await self.pc.lcu('/lol-champ-select/v1/session')
             if isinstance(sess, dict) and sess.get('myTeam') is not None:
-                cs = parse_champselect(sess, self.state.get('me') or '')
+                champ_puuid = None
+                if any(p.get('nameVisibilityType') == 'HIDDEN' or not p.get('gameName') for p in sess['myTeam']):
+                    # 有人隱藏名字：gameflow session 的 playerChampionSelections 可能已經帶他的 puuid
+                    champ_puuid = selection_champ_puuids(await self.pc.lcu('/lol-gameflow/v1/session') or {})
+                cs = parse_champselect(sess, self.state.get('me') or '', champ_puuid)
                 self._set(phase='champselect', sub='選角中', champselect=cs, live=None)
                 self._want_profiles([p['puuid'] for p in cs['team']], qid)
                 self._want_mastery([(p['puuid'], p['championId']) for p in cs['team']])
@@ -618,7 +623,7 @@ class LolCog(commands.Cog):
             if isinstance(d, dict) and d.get('allPlayers'):
                 self._dump_raw(d)
                 live = parse_live(d, self.static.data, self._name_to_puuid, self.builds(),
-                                  self.state.get('_session_champs'))
+                                  self.state.get('_session_champs'), self.state.get('_session_hidden'))
                 self._want_builds([p['champ']['id'] for p in live['players']])
                 self._set(phase='ingame', sub='遊戲中', live=live, champselect=None)
                 self._want_mastery([(p['puuid'], p['champ']['id']) for p in live['players']])
@@ -653,6 +658,7 @@ class LolCog(commands.Cog):
         self._set(phase='eog' if self.state.get('eog') else 'idle', sub=sub, live=None, champselect=None)
         self.state.pop('_session_puuids', None)
         self.state.pop('_session_champs', None)
+        self.state.pop('_session_hidden', None)
         return POLL_ACTIVE if phase in ('Matchmaking', 'ReadyCheck') else POLL_IDLE
 
     def public_state(self) -> dict:

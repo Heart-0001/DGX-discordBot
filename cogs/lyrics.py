@@ -429,9 +429,7 @@ class LyricsCog(commands.Cog):
         await self._open(interaction, 'auto', '✅ 已切換成自動模式')
 
     async def _open(self, interaction: discord.Interaction, mode: str, switched: str):
-        if not interaction.user.voice:
-            await interaction.response.send_message('❌ 請先加入語音頻道再開 Activity', ephemeral=True)
-            return
+        # 不在語音也可以開：Discord 支援在文字頻道開 Activity，模式會記在打指令的文字頻道(set_activity_mode)
         set_mode = getattr(self.bot, 'set_activity_mode', None)
         if set_mode:
             set_mode(interaction, mode)

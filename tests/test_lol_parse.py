@@ -1,5 +1,6 @@
 """cogs/lol_parse.py 的解析測試(資料是手造的，不放真實玩家資訊)。"""
-from cogs.lol_parse import parse_champselect, parse_eog, parse_live, parse_profile, queue_name
+from cogs.lol_parse import (parse_champselect, parse_eog, parse_live, parse_profile, queue_name, selection_champ_puuids,
+                            session_champ_puuids, session_hidden_puuids, session_puuids)
 
 STATIC = {'champKeyToId': {'skarner': 72, 'garen': 86}, 'champIdToKey': {'72': 'Skarner', '86': 'Garen'},
           'spellKeys': {'SummonerFlash': '閃現'}}
@@ -267,3 +268,49 @@ def test_recommend_only_from_build_and_explains_counters():
     assert got[0]['counter'] and any('重創' in x for x in got[0]['reasons']) and any('護甲' in x for x in got[0]['reasons'])
     assert all(r['id'] != 3071 for r in got)                 # 不在常出清單的不推薦
     assert recommend(54, [], None, prof, static, 12) == []   # 沒有 op.gg 資料就不推薦(不瞎掰)
+
+
+# 隱藏名字的玩家：teamOne/teamTwo 沒有他，playerChampionSelections(前半 teamOne、後半 teamTwo)還是帶 puuid
+SESS = {'gameData': {
+    'teamOne': [{'puuid': 'a1', 'championId': 86}, {'puuid': 'a2', 'championId': 72}],
+    'teamTwo': [{'puuid': 'b1', 'championId': 86}, {'puuid': 'b2', 'championId': 101}],
+    'playerChampionSelections': [{'puuid': 'a1', 'championId': 86}, {'puuid': 'a2', 'championId': 72},
+                                 {'puuid': 'h1', 'championId': 805},
+                                 {'puuid': 'b1', 'championId': 86}, {'puuid': 'b2', 'championId': 101},
+                                 {'puuid': 'h2', 'championId': 72}]}}
+
+
+def test_session_hidden():
+    assert session_puuids(SESS) == ['a1', 'a2', 'b1', 'b2', 'h1', 'h2']
+    assert session_hidden_puuids(SESS) == {'ORDER': ['h1'], 'CHAOS': ['h2']}
+    champs = session_champ_puuids(SESS)
+    assert champs['ORDER:805'] == 'h1' and champs['CHAOS:72'] == 'h2' and champs['ORDER:86'] == 'a1'
+    sel = selection_champ_puuids(SESS)
+    assert sel[805] == 'h1' and sel[101] == 'b2' and 86 not in sel and 72 not in sel   # 重複的英雄不給
+
+
+def test_live_hidden_assigned():
+    d = {'activePlayer': {'riotId': 'Me#1'},
+         'allPlayers': [_player('Me', '1', 'ORDER', 'Garen', '蓋倫'),
+                        _player('', '', 'ORDER', 'Skarner', '史加納'),      # 大混戰換過角：805 → 72，靠「只剩一個」指派
+                        _player('', '', 'CHAOS', 'Skarner', '史加納'),      # 英雄沒換：直接命中 CHAOS:72
+                        _player('Foe', '2', 'CHAOS', 'Garen', '蓋倫')],
+         'events': {'Events': []}, 'gameData': {'gameTime': 1}}
+    live = parse_live(d, STATIC, {'me#1': 'a1'}, None, session_champ_puuids(SESS), session_hidden_puuids(SESS))
+    ps = live['players']
+    assert ps[1]['hidden'] and ps[1]['puuid'] == 'h1' and ps[1]['name'] == ''
+    assert ps[2]['hidden'] and ps[2]['puuid'] == 'h2'
+    # 同隊兩個隱藏又都換角 → 分不出來，不亂指
+    two = {'ORDER': ['h1', 'h3'], 'CHAOS': []}
+    live = parse_live(d, STATIC, {'me#1': 'a1'}, None, {}, two)
+    assert live['players'][1]['puuid'] is None
+
+
+def test_champselect_hidden_filled_from_selections():
+    sess = {'localPlayerCellId': 0,
+            'myTeam': [{'cellId': 0, 'puuid': 'me', 'gameName': 'Me', 'tagLine': '1', 'championId': 86,
+                        'nameVisibilityType': 'VISIBLE'},
+                       {'cellId': 1, 'puuid': '', 'gameName': '', 'championId': 805, 'nameVisibilityType': 'HIDDEN'}]}
+    cs = parse_champselect(sess, 'me', {805: 'h1'})
+    assert cs['team'][1]['hidden'] and cs['team'][1]['puuid'] == 'h1'
+    assert parse_champselect(sess, 'me')['team'][1]['puuid'] is None

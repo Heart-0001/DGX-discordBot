@@ -46,9 +46,14 @@ const augImg = (id) => {
   return img(`lol/img/aug/${id}.png`, `aug ${rar}`, a.name || `強化 ${id}`, '✦');
 };
 
-function riotName(p) {
-  if (!p || p.hidden || !p.name) return '<span class="hid">隱藏</span>';
-  return `${esc(p.name)}${p.tag ? `<small>#${esc(p.tag)}</small>` : ''}`;
+// 隱藏名字的玩家：Live Client 不給名字，但 puuid 從客戶端 session 撈得到 → 用查到的資料顯示，加「隱」標記
+function riotName(p, prof) {
+  if (!p) return '<span class="hid">隱藏</span>';
+  const name = p.name || (p.hidden && prof?.name) || '';
+  const tag = p.name ? p.tag : prof?.tag;
+  if (!name) return '<span class="hid">隱藏</span>';
+  const badge = p.hidden ? '<span class="hid-badge" title="這位玩家隱藏了名字">隱</span>' : '';
+  return `${badge}${esc(name)}${tag ? `<small>#${esc(tag)}</small>` : ''}`;
 }
 
 // 牌位：單雙 → 彈性 → 未排名
@@ -141,12 +146,12 @@ function playerCard(p, prof, champId, withGames = false) {
   return `<div class="pcard${p.me ? ' me' : ''}">
     ${pic}
     <div class="pc-info">
-      <div class="pc-name">${riotName(p)}</div>
+      <div class="pc-name">${riotName(p, prof)}</div>
       <div class="pc-sub">${champName ? `<span class="pc-champ">${champName}</span>` : ''}<span class="pc-lvl">${esc(lvl)}</span></div>
       <div class="pc-mas">${masteryHtml(prof, champId)}</div>
-      <div class="pc-rank">${p.hidden || !p.puuid ? '<span class="dim">—</span>' : rankHtml(prof)}</div>
-      <div class="pc-wr">${p.hidden || !p.puuid ? '' : `<span class="full">${recentHtml(prof, qn)}</span><span class="compact">${recentHtml(prof, qn, true)}</span>`}</div>
-      ${withGames && !p.hidden && p.puuid ? gamesHtml(prof) : ''}
+      <div class="pc-rank">${!p.puuid ? '<span class="dim">—</span>' : rankHtml(prof)}</div>
+      <div class="pc-wr">${!p.puuid ? '' : `<span class="full">${recentHtml(prof, qn)}</span><span class="compact">${recentHtml(prof, qn, true)}</span>`}</div>
+      ${withGames && p.puuid ? gamesHtml(prof) : ''}
     </div>
   </div>`;
 }
@@ -173,7 +178,7 @@ function viewLoading() {
 }
 
 function liveRow(p) {
-  const prof = p.hidden ? null : profOf(p.puuid);
+  const prof = profOf(p.puuid);
   const items = Array(ITEM_SLOTS).fill(null);
   for (const it of p.items || []) if (it.slot >= 0 && it.slot < ITEM_SLOTS) items[it.slot] = it;
   const itemsHtml = items.map((it) => (it ? itemImg(it.id, it.count > 1 ? `${it.name} ×${it.count}` : it.name) : itemImg(0))).join('');
@@ -182,8 +187,8 @@ function liveRow(p) {
   return `<div class="lrow${p.me ? ' me' : ''}${p.dead ? ' dead' : ''}">
     <div class="c-champ">${champImg(p.champ?.id || p.champ?.key, 'champ', p.champ?.name || '')}<span class="lvl">${p.level}</span>${dead}</div>
     <div class="c-spells">${spells}</div>
-    <div class="c-name"><div class="nm">${riotName(p)}</div><div class="cn">${esc(p.champ?.name || '')} ${masteryHtml(prof, p.champ?.id)}</div></div>
-    <div class="c-prof">${p.hidden || !p.puuid ? '<span class="dim">—</span>' : `${rankHtml(prof, true)}${recentHtml(prof, state.queue?.name, true)}`}</div>
+    <div class="c-name"><div class="nm">${riotName(p, prof)}</div><div class="cn">${esc(p.champ?.name || '')} ${masteryHtml(prof, p.champ?.id)}</div></div>
+    <div class="c-prof">${!p.puuid ? '<span class="dim">—</span>' : `${rankHtml(prof, true)}${recentHtml(prof, state.queue?.name, true)}`}</div>
     <div class="c-kda">${kda(p)}</div>
     <div class="c-cs">${p.cs}</div>
     <div class="c-gold" title="身上裝備的總價(推算)">${kGold(p.gold)}</div>
@@ -295,7 +300,7 @@ function viewEog() {
     return `<div class="erow${p.me ? ' me' : ''}">
       <div class="c-champ">${champImg(p.champ?.id || p.champ?.key, 'champ', p.champ?.name || '')}<span class="lvl">${p.level}</span></div>
       <div class="c-spells">${(p.spells || []).slice(0, 2).map((id) => spellImg(id, staticData.spells[id] || '')).join('')}</div>
-      <div class="c-name"><div class="nm">${riotName(p)}</div><div class="cn">${esc(p.champ?.name || '')}</div></div>
+      <div class="c-name"><div class="nm">${riotName(p, prof)}</div><div class="cn">${esc(p.champ?.name || '')}</div></div>
       <div class="c-kda" title="CS ${p.cs}">${kda(p)}</div>
       ${statBar(p, 'dmg', 'dmg', dmgTip)}
       ${statBar(p, 'taken', 'taken', takenTip)}

@@ -69,10 +69,17 @@ class RiotApi:
         self._limits_hdr = ''
         self._cache: dict[str, tuple[float, object]] = {}
         self.disabled_reason = ''
+        self._auth_fail = 0            # account API 連續 401/403 次數
+        self._retry_at = 0.0           # 暫停到幾點再探一次(monotonic)
+
+    AUTH_RETRY_SEC = 10 * 60
+    AUTH_MAX_FAIL = 3                  # 連續 3 次(約 30 分鐘)都 401/403 才真的停用
 
     @property
     def enabled(self) -> bool:
-        return bool(self.key) and not self.disabled_reason
+        if not self.key or self.disabled_reason:
+            return False
+        return time.monotonic() >= self._retry_at
 
     async def get(self, url: str, ttl: float):
         """回 JSON；404 回 None(也快取)；其他錯誤回 None 不快取。"""
@@ -96,9 +103,16 @@ class RiotApi:
                         log.warning(f'🎮 Riot API 429，等 {retry:.0f} 秒')
                         continue
                     if r.status in (401, 403) and '/riot/account/' in url:
-                        # 帳號 API 一定有權限 → 401/403 代表 key 失效或過期
-                        self.disabled_reason = f'key 失效({r.status})'
-                        log.error(f'🎮 Riot API key 失效({r.status})，停用 API')
+                        # 帳號 API 一定有權限 → 401/403 多半是 key 失效；但 Riot 偶爾會抖一下回 403，
+                        # 所以先暫停 10 分鐘再探，連續 AUTH_MAX_FAIL 次才真的停用
+                        self._auth_fail += 1
+                        if self._auth_fail >= self.AUTH_MAX_FAIL:
+                            self.disabled_reason = f'key 失效({r.status})'
+                            log.error(f'🎮 Riot API key 連續 {self._auth_fail} 次 {r.status}，停用 API')
+                        else:
+                            self._retry_at = time.monotonic() + self.AUTH_RETRY_SEC
+                            log.warning(f'🎮 Riot API 回 {r.status}（第 {self._auth_fail} 次），'
+                                        f'{self.AUTH_RETRY_SEC // 60} 分鐘後再試')
                         return None
                     if r.status == 404:
                         self._store(url, None, min(ttl, 300))
@@ -106,6 +120,7 @@ class RiotApi:
                     if r.status != 200:
                         return None
                     data = await r.json(content_type=None)
+                    self._auth_fail = 0
             except (aiohttp.ClientError, asyncio.TimeoutError) as e:
                 log.warning(f'🎮 Riot API 失敗 {url.split("?")[0][-60:]}: {e!r}')
                 return None

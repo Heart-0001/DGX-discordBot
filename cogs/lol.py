@@ -569,6 +569,8 @@ class LolCog(commands.Cog):
         phase = await self.pc.lcu('/lol-gameflow/v1/gameflow-phase')
         if not isinstance(phase, str):
             # lockfile 讀不到 = 客戶端沒開；ssh 失敗 = PC 離線
+            # 客戶端重開過 port 會換，舊的 creds 連不上 → 丟掉，下一輪重讀 lockfile
+            self.pc.creds = None
             ok = await self.pc._run('echo ok', timeout=6)
             self._set(phase='eog' if self.state.get('eog') else 'offline',
                       sub='PC 離線' if not ok else '客戶端未開啟', live=None, champselect=None)

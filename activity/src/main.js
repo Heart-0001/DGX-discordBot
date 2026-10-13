@@ -276,8 +276,10 @@ function setMode(m, guildId) {
 }
 
 // 部署新版後，開著的 Activity 會一直跑舊程式 → 每分鐘看一下 index.html 的版本號，變了就重新載入
+// 只限瀏覽器測試：在 Discord 裡 reload 後 SDK 握手(sdk.ready)不會再完成，畫面會整個停住(2026-10-14 實測)，要重開 /act
 const BUILD = new URL(import.meta.url).searchParams.get('v');
 async function checkUpdate() {
+  if (new URLSearchParams(location.search).has('frame_id')) return;
   try {
     const html = await fetch('./', { cache: 'no-store' }).then((r) => r.text());
     const v = (html.match(/main\.js\?v=(\d+)/) || [])[1];

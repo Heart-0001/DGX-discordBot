@@ -300,7 +300,7 @@ function viewEog() {
     return `<div class="erow${p.me ? ' me' : ''}">
       <div class="c-champ">${champImg(p.champ?.id || p.champ?.key, 'champ', p.champ?.name || '')}<span class="lvl">${p.level}</span></div>
       <div class="c-spells">${(p.spells || []).slice(0, 2).map((id) => spellImg(id, staticData.spells[id] || '')).join('')}</div>
-      <div class="c-name"><div class="nm">${riotName(p, prof)}</div><div class="cn">${esc(p.champ?.name || '')}</div></div>
+      <div class="c-name"><div class="nm">${riotName(p, profOf(p.puuid))}</div><div class="cn">${esc(p.champ?.name || '')}</div></div>
       <div class="c-kda" title="CS ${p.cs}">${kda(p)}</div>
       ${statBar(p, 'dmg', 'dmg', dmgTip)}
       ${statBar(p, 'taken', 'taken', takenTip)}
@@ -411,14 +411,15 @@ export function startLol(el) {
   root = el;
   root.hidden = false;
   root.addEventListener('error', onImgError, true);
+  // 先連線再畫舊畫面：舊資料畫壞了(丟例外)也不會讓這次切換連不上、整個卡住
+  connect();
+  tickT = setInterval(tick, 250);
   if (!state) showMsg('連線中…');
   else { lastKey = ''; render(); }
   fetch('lol/static.json').then((r) => r.json()).then((d) => {
     staticData = { champions: {}, augments: {}, spells: {}, ...d };
     lastKey = ''; render();
   }).catch((e) => console.warn('static.json 載入失敗', e));
-  connect();
-  tickT = setInterval(tick, 250);
 }
 
 export function stopLol() {

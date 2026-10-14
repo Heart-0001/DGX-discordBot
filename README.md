@@ -46,6 +46,11 @@
 - `/valo 名字#tag` 查牌位、歷史最高與最近對戰（有設定小帳就直接查 Riot，否則 HenrikDev；名字→puuid 一律靠 HenrikDev）
 - `/valo-track` 追蹤玩家，打完一場自動把完整計分板發到指定頻道（每個伺服器各自設一個頻道，在哪個伺服器 add 就發到哪；有小帳就直接查 Riot，打完幾秒就有，否則等 HenrikDev）
 
+### 📈 股票
+- `/stock` 查股價：台股代號、中文名（可打一部分）、美股代號、英文名、常見中文名（蘋果、輝達）、指數（大盤、櫃買、費半、標普500）都可以，自動判斷台股或美股；附當日走勢圖（紅漲綠跌）
+- `/stock-track` 追蹤股票，每個交易日開盤、收盤各發一則訊息到指定頻道；休市日（看當天有沒有成交資料判斷）不發
+- 資料來源（免費、免 key）：台股報價用證交所 mis 即時資料，名稱清單用證交所／櫃買 OpenAPI，美股與走勢圖用 Yahoo Finance
+
 ### 🩺 健康檢查
 - `scripts/healthcheck.sh` 每日診斷 service 狀態、重啟抖動、403 / 播放失敗、OOM、yt-dlp 版本、log 大小
 - `/check` 在 Discord 查看最近一次報告
@@ -192,6 +197,14 @@ cd activity && npm install && npm run build
 | `/valo-track remove <名字#tag>` | 取消追蹤。 |
 | `/valo-track list` | 目前追蹤中的玩家。 |
 
+### 📈 股票
+| 指令 | 說明 |
+|------|------|
+| `/stock <代號或名稱>` | 查股價，例如 `6669`、`緯穎`、`VTI`、`apple`、`大盤`。 |
+| `/stock-track add <代號或名稱>` | 追蹤股票：開盤（台股 09:00／美股 09:30 美東）、收盤（13:30／16:00）各發一則到這個頻道。 |
+| `/stock-track remove <股票>` | 取消追蹤。 |
+| `/stock-track list` | 這個伺服器追蹤中的股票。 |
+
 ### 🩺 其他
 | 指令 | 說明 |
 |------|------|
@@ -270,6 +283,8 @@ discordbot/
 │   ├── valo_parse.py       # Valorant 戰績整理（純函式）
 │   ├── valo_live.py        # Riot Client token → GLZ / PD 對局、牌位、對戰紀錄
 │   ├── valo_live_parse.py  # 對局 / 賽後資料整理（純函式）
+│   ├── stock.py            # /stock、/stock-track（報價抓取、開收盤通知）
+│   ├── stock_parse.py      # 股票代號解析、報價整理、開收盤時間、走勢圖（純函式）
 │   ├── health.py           # /check 健康報告
 │   ├── bigtwo.py           # 大老二
 │   └── uno.py              # UNO

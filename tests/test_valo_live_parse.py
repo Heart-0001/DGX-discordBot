@@ -227,3 +227,57 @@ def test_competitive_stops_at_previous_act():
     assert 'queue=competitive' in calls[0] and 'endIndex=6' in calls[0]
     summs['m2'] = None
     assert asyncio.run(link.competitive('me', {}, 'cur', n=5)) is None
+
+
+def test_eog_extras_spike_suicide_and_teamkill_not_multikill():
+    """Riot 把被自己隊的包炸死記成 killer=victim 的 kill；它和 teamkill 都不能算進多殺/KAST，最常用槍看每回合手上的槍。"""
+    from cogs.valo_live_parse import eog_extras
+    content = dict(CONTENT, weapons={'w1': '制式手槍', 'w2': '暴徒'}, ceremonies={})
+    players = [{'subject': p, 'teamId': t} for p, t in (('me', 'Red'), ('r2', 'Red'), ('x', 'Blue'), ('y', 'Blue'), ('z', 'Blue'))]
+    kills = [
+        {'round': 0, 'roundTime': 1000, 'killer': 'me', 'victim': 'x', 'assistants': [], 'finishingDamage': {'damageType': 'Weapon', 'damageItem': 'W1'}},
+        {'round': 0, 'roundTime': 2000, 'killer': 'me', 'victim': 'y', 'assistants': [], 'finishingDamage': {'damageType': 'Weapon', 'damageItem': 'W1'}},
+        {'round': 0, 'roundTime': 3000, 'killer': 'me', 'victim': 'r2', 'assistants': [], 'finishingDamage': {'damageType': 'Weapon', 'damageItem': 'W1'}},
+        {'round': 0, 'roundTime': 9000, 'killer': 'me', 'victim': 'me', 'assistants': [], 'finishingDamage': {'damageType': 'Bomb', 'damageItem': ''}},
+        {'round': 1, 'roundTime': 1000, 'killer': 'z', 'victim': 'me', 'assistants': [], 'finishingDamage': {'damageType': 'Weapon', 'damageItem': 'W2'}},
+    ]
+    def ps(pu, rnd, weapon):
+        return {'subject': pu, 'kills': [k for k in kills if k['round'] == rnd and k['killer'] == pu], 'damage': [],
+                'economy': {'loadoutValue': 3000, 'weapon': weapon}}
+    rounds = [{'roundNum': n, 'winningTeam': 'Blue', 'roundResultCode': 'Detonate', 'roundCeremony': '', 'firstBloodPlayer': 'me',
+               'playerStats': [ps(p, n, 'W2' if n else 'W1') for p in ('me', 'r2', 'x', 'y', 'z')]} for n in (0, 1, 2)]
+    e = eog_extras({'matchInfo': {'queueID': 'competitive'}, 'players': players, 'roundResults': rounds, 'kills': kills}, content)
+    me = e['players']['me']
+    assert me['mk'] == [0, 0, 0]          # 2 殺 + teamkill + 自爆 → 不是 3K
+    assert me['kast'] == 67               # R1 有殺、R2 死掉沒人換、R3 存活
+    assert me['weapon'] == '暴徒'          # 2 回合拿暴徒 > 1 回合制式手槍，雖然殺人全用制式手槍
+
+
+def test_spike_self_damage_not_in_adr_hs_kast():
+    """被自己隊的包炸死：Riot 記 killer=victim + 一筆 ~1000 打自己的傷害。不能灌 ADR/HS%，也不能算成「被換掉」拿 KAST、不能算被首殺。"""
+    from cogs.valo_live_parse import eog_table, match_summaries
+    players = [{'subject': p, 'teamId': t, 'stats': {'kills': 0, 'deaths': 0, 'assists': 0, 'score': 0, 'roundsPlayed': 2},
+                'roundDamage': [{'damage': 9999}]}
+               for p, t in (('me', 'Red'), ('r2', 'Red'), ('x', 'Blue'))]
+    kills = [
+        {'round': 0, 'roundTime': 5000, 'killer': 'me', 'victim': 'me', 'assistants': [], 'finishingDamage': {'damageType': 'Bomb', 'damageItem': ''}},
+        {'round': 1, 'roundTime': 1000, 'killer': 'x', 'victim': 'r2', 'assistants': [], 'finishingDamage': {'damageType': 'Weapon', 'damageItem': 'W1'}},
+    ]
+    def ps(pu, rnd):
+        dmg = []
+        if pu == 'me' and rnd == 0:
+            dmg = [{'receiver': 'x', 'damage': 150, 'headshots': 1, 'bodyshots': 0, 'legshots': 0},
+                   {'receiver': 'me', 'damage': 999, 'headshots': 0, 'bodyshots': 0, 'legshots': 0},
+                   {'receiver': 'r2', 'damage': 20, 'headshots': 0, 'bodyshots': 3, 'legshots': 0}]
+        return {'subject': pu, 'kills': [k for k in kills if k['round'] == rnd and k['killer'] == pu], 'damage': dmg,
+                'economy': {'loadoutValue': 1000}}
+    rounds = [{'roundNum': n, 'winningTeam': 'Blue', 'roundResultCode': 'Detonate', 'roundCeremony': '',
+               'playerStats': [ps(p, n) for p in ('me', 'r2', 'x')]} for n in (0, 1)]
+    d = {'matchInfo': {'queueID': 'competitive'}, 'players': players, 'roundResults': rounds, 'kills': kills,
+         'teams': [{'teamId': 'Red', 'won': False}, {'teamId': 'Blue', 'won': True}]}
+    e = eog_table(d, 'me', set(), CONTENT)
+    me = next(p for t in e['teams'] for p in t['players'] if p['me'])
+    assert me['dmg'] == 150 and me['hs'] == 100       # 打自己 999、打隊友 20(3 發身體)都不算
+    assert me['kast'] == 50                            # R1 被包炸死不算被換；R2 存活
+    assert me['fd'] == 0                               # R1 唯一的「擊殺」是自爆，不算被首殺
+    assert match_summaries(d, CONTENT)['me']['dmg'] == 150

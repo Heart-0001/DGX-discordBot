@@ -71,6 +71,35 @@ def parse_match(kind: str, m: dict, names: dict, mmrs: dict, season: str, conten
             'teams': out}
 
 
+def _hits_enemy(d: dict) -> tuple[dict, dict]:
+    """roundResults 的傷害事件 → ({puuid: 對敵人的總傷害}, {puuid: [頭, 身, 腳]})。
+    打到自己或隊友的不算：被自己隊的包炸死時 Riot 會記一筆 ~1000 的傷害給被炸的人自己，會把 ADR 灌爆。
+    回傳的 dict 為空代表這份資料沒有每回合傷害事件(舊格式/測試)，呼叫端改用 roundDamage。"""
+    ffa = ((d.get('matchInfo') or {}).get('queueID') or '').lower() == 'deathmatch'
+    team_of = {p.get('subject'): p.get('teamId') for p in d.get('players') or []}
+    dmg: dict[str, int] = {}
+    shots: dict[str, list] = {}
+    for r in d.get('roundResults') or []:
+        for ps in r.get('playerStats') or []:
+            pu = ps.get('subject', '')
+            for dm in ps.get('damage') or []:
+                rc = dm.get('receiver')
+                if rc == pu or (not ffa and rc in team_of and team_of.get(rc) == team_of.get(pu)):
+                    continue
+                dmg[pu] = dmg.get(pu, 0) + dm.get('damage', 0)
+                acc = shots.setdefault(pu, [0, 0, 0])
+                acc[0] += dm.get('headshots', 0)
+                acc[1] += dm.get('bodyshots', 0)
+                acc[2] += dm.get('legshots', 0)
+    return dmg, shots
+
+
+def _dmg_of(p: dict, enemy_dmg: dict, have_events: bool) -> int:
+    if have_events:
+        return enemy_dmg.get(p.get('subject', ''), 0)
+    return sum(r.get('damage', 0) for r in p.get('roundDamage') or [])
+
+
 def match_summaries(d: dict, content: dict) -> dict[str, dict]:
     """pd /match-details 一場 → 每位玩家的 {w,k,d,a,agent,queue,t}。w: True/False，死鬥等無隊伍的為 None。"""
     info = d.get('matchInfo') or {}
@@ -78,17 +107,12 @@ def match_summaries(d: dict, content: dict) -> dict[str, dict]:
     won = {t.get('teamId'): bool(t.get('won')) for t in d.get('teams') or []}
     queue = (info.get('queueID') or '').lower()
     # 每回合的命中部位與首殺(roundResults) → 算 HS% 與首殺數
-    shots: dict[str, list] = {}
+    enemy_dmg, shots = _hits_enemy(d)
+    have_events = any(ps.get('damage') for r in d.get('roundResults') or [] for ps in r.get('playerStats') or [])
     fb: dict[str, int] = {}
     for r in d.get('roundResults') or []:
         if r.get('firstBloodPlayer'):
             fb[r['firstBloodPlayer']] = fb.get(r['firstBloodPlayer'], 0) + 1
-        for ps in r.get('playerStats') or []:
-            acc = shots.setdefault(ps.get('subject', ''), [0, 0, 0])
-            for dm in ps.get('damage') or []:
-                acc[0] += dm.get('headshots', 0)
-                acc[1] += dm.get('bodyshots', 0)
-                acc[2] += dm.get('legshots', 0)
     out = {}
     for p in d.get('players') or []:
         st = p.get('stats') or {}
@@ -98,7 +122,7 @@ def match_summaries(d: dict, content: dict) -> dict[str, dict]:
             'w': won.get(p.get('teamId')) if queue != 'deathmatch' else None,
             'k': st.get('kills', 0), 'd': st.get('deaths', 0), 'a': st.get('assists', 0),
             'score': st.get('score', 0), 'rounds': st.get('roundsPlayed', 0),
-            'dmg': sum(r.get('damage', 0) for r in p.get('roundDamage') or []),
+            'dmg': _dmg_of(p, enemy_dmg, have_events),
             'hs': hs, 'bs': bs, 'ls': ls, 'fb': fb.get(pu, 0),
             'agent': agents.get((p.get('characterId') or '').lower(), {}).get('name', '?'),
             'agentId': (p.get('characterId') or '').lower(),
@@ -143,6 +167,8 @@ def eog_table(d: dict, me: str, hidden: set, content: dict, names: Optional[dict
     my_team = next((p.get('teamId') for p in d.get('players') or [] if p.get('subject') == me), None)
     teams: dict[str, list] = {}
     extras = eog_extras(d, content)
+    enemy_dmg, _ = _hits_enemy(d)
+    have_events = any(ps.get('damage') for r in d.get('roundResults') or [] for ps in r.get('playerStats') or [])
     parties = party_tags(d.get('players') or [])
     for p in d.get('players') or []:
         st = p.get('stats') or {}
@@ -164,7 +190,7 @@ def eog_table(d: dict, me: str, hidden: set, content: dict, names: Optional[dict
             'agent': agents.get((p.get('characterId') or '').lower(), {}).get('name', '?'),
             'k': st.get('kills', 0), 'd': st.get('deaths', 0), 'a': st.get('assists', 0),
             'score': st.get('score', 0), 'rounds': st.get('roundsPlayed', 0),
-            'dmg': sum(r.get('damage', 0) for r in p.get('roundDamage') or []),
+            'dmg': _dmg_of(p, enemy_dmg, have_events),
             'tier': p.get('competitiveTier') or (tiers or {}).get(pu) or 0, 'level': p.get('accountLevel'),
             'tierName': (content.get('tiers', {}).get(str(p.get('competitiveTier') or (tiers or {}).get(pu) or 0)) or {}).get('name', ''),
             'mvp': pu == (tinfo.get(p.get('teamId')) or {}).get('mvp'),
@@ -218,7 +244,7 @@ def party_tags(players: list) -> dict[str, str]:
 
 def eog_extras(d: dict, content: dict) -> dict:
     """用 roundResults + kills 算每人的進階數據與每回合摘要。
-    players[pu] = {hs, kast, fb, fd, mk:[3K,4K,5K+ 次數], clutch:[...'1v2'], econ(平均裝備值), weapon(最常用槍), plants, defuses}
+    players[pu] = {hs, kast, fb, fd, mk:[3K,4K,5K+ 次數], clutch:[...'1v2'], econ(平均裝備值), weapon(最多回合拿的槍), plants, defuses}
     rounds = [{n, win(teamId), code, site, planter, defuser, ceremony, fb, score:[紅,藍]...}]"""
     weapons = content.get('weapons') or {}
     ceremonies = content.get('ceremonies') or {}
@@ -230,7 +256,7 @@ def eog_extras(d: dict, content: dict) -> dict:
     queue = ((d.get('matchInfo') or {}).get('queueID') or '').lower()
     ffa = queue == 'deathmatch'
     stats = {pu: {'hs': [0, 0, 0], 'kast': 0, 'fb': 0, 'fd': 0, 'mk': [0, 0, 0], 'clutch': [],
-                  'loadout': [], 'weapons': {}, 'plants': 0, 'defuses': 0} for pu in team_of}
+                  'loadout': [], 'weapons': {}, 'killw': {}, 'plants': 0, 'defuses': 0} for pu in team_of}
     kills_by_round: dict[int, list] = {}
     for k in d.get('kills') or []:
         kills_by_round.setdefault(k.get('round', 0), []).append(k)
@@ -240,6 +266,9 @@ def eog_extras(d: dict, content: dict) -> dict:
     for r in d.get('roundResults') or []:
         n = r.get('roundNum', 0)
         rk = sorted(kills_by_round.get(n, []), key=lambda k: k.get('roundTime', 0))
+        # 真的殺到敵人的(排除包炸死自己、teamkill)；死亡順序(KAST/Clutch)還是用全部的 rk
+        rk_enemy = [k for k in rk if k.get('killer') != k.get('victim')
+                    and (ffa or team_of.get(k.get('killer')) != team_of.get(k.get('victim')))]
         winner = r.get('winningTeam')
         if winner:
             score[winner] = score.get(winner, 0) + 1
@@ -250,18 +279,19 @@ def eog_extras(d: dict, content: dict) -> dict:
             st = stats.get(pu)
             if not st:
                 continue
-            for dm in ps.get('damage') or []:
-                st['hs'][0] += dm.get('headshots', 0)
-                st['hs'][1] += dm.get('bodyshots', 0)
-                st['hs'][2] += dm.get('legshots', 0)
             eco = ps.get('economy') or {}
             if eco.get('loadoutValue') is not None:
                 st['loadout'].append(eco['loadoutValue'])
-            kills_in_round[pu] = len(ps.get('kills') or [])
+            held = (eco.get('weapon') or '').lower()    # 這回合手上的槍(最常用槍用這個算，不看擊殺)
+            if held:
+                st['weapons'][held] = st['weapons'].get(held, 0) + 1
+            # 被自己隊的包炸死 Riot 也記成 killer=victim 的一筆 kill；它和 teamkill 都不算殺敵
+            kills_in_round[pu] = sum(1 for k in ps.get('kills') or []
+                                     if k.get('victim') != pu and (ffa or team_of.get(k.get('victim')) != team_of.get(pu)))
             for k in ps.get('kills') or []:
                 item = ((k.get('finishingDamage') or {}).get('damageItem') or '').lower()
                 if (k.get('finishingDamage') or {}).get('damageType') == 'Weapon' and item:
-                    st['weapons'][item] = st['weapons'].get(item, 0) + 1
+                    st['killw'][item] = st['killw'].get(item, 0) + 1
         for pu, c in kills_in_round.items():
             if c >= 3:
                 stats[pu]['mk'][min(c, 5) - 3] += 1
@@ -270,11 +300,11 @@ def eog_extras(d: dict, content: dict) -> dict:
         if r.get('bombDefuser') in stats:
             stats[r['bombDefuser']]['defuses'] += 1
         # 首殺 / 被首殺
-        fb = r.get('firstBloodPlayer') or (rk[0].get('killer') if rk else None)
+        fb = r.get('firstBloodPlayer') or (rk_enemy[0].get('killer') if rk_enemy else None)
         if fb in stats:
             stats[fb]['fb'] += 1
-        if rk and rk[0].get('victim') in stats:
-            stats[rk[0]['victim']]['fd'] += 1
+        if rk_enemy and rk_enemy[0].get('victim') in stats:
+            stats[rk_enemy[0]['victim']]['fd'] += 1
         # KAST 與 Clutch：照擊殺順序算誰還活著
         alive = {t: set(m) for t, m in members.items()}
         dead_at: dict[str, int] = {}
@@ -299,8 +329,10 @@ def eog_extras(d: dict, content: dict) -> dict:
         assisted = {a for k in rk for a in (k.get('assistants') or [])}
         for pu in team_of:
             survived = pu not in dead_at
-            traded = pu in dead_at and any(
-                kv == killer_of.get(pu) and 0 <= t2 - dead_at[pu] <= 5000 for kv, t2 in dead_at.items())
+            kl = killer_of.get(pu)
+            # 被換掉：殺我的敵人 5 秒內也死了。被包炸死(killer=自己)或被隊友殺不算，不然自爆會自動算成被換
+            traded = (pu in dead_at and kl and kl != pu and (ffa or team_of.get(kl) != team_of.get(pu))
+                      and any(kv == kl and 0 <= t2 - dead_at[pu] <= 5000 for kv, t2 in dead_at.items()))
             if kills_in_round.get(pu) or pu in assisted or survived or traded:
                 stats[pu]['kast'] += 1
         rounds.append({
@@ -309,12 +341,17 @@ def eog_extras(d: dict, content: dict) -> dict:
             'ceremony': ceremony_name(r.get('roundCeremony'), ceremonies),
             'fb': fb or '', 'score': [score.get(t, 0) for t in team_ids],
         })
+    _, shots = _hits_enemy(d)
+    for pu, acc in shots.items():
+        if pu in stats:
+            stats[pu]['hs'] = acc
     nrounds = max(1, len(rounds))
     roundbased = len(rounds) > 1 and not ffa    # 團隊死鬥/死鬥只有 1 回合，KAST/多殺/Clutch 沒意義
     out = {}
     for pu, st in stats.items():
         tot = sum(st['hs'])
-        top = max(st['weapons'].items(), key=lambda kv: kv[1])[0] if st['weapons'] else ''
+        wsrc = st['weapons'] or st['killw']    # 沒有每回合裝備資料(舊格式)才退回用擊殺武器
+        top = max(wsrc.items(), key=lambda kv: kv[1])[0] if wsrc else ''
         loadout = [v for v in st['loadout'] if v]
         out[pu] = {
             'hs': round(st['hs'][0] * 100 / tot) if tot else 0,

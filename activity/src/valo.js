@@ -115,7 +115,7 @@ function aggregate(gs) {
   const s = { n: gs.length, w: 0, l: 0, k: 0, d: 0, a: 0, score: 0, rounds: 0, dmg: 0, hs: 0, shots: 0, fb: 0 };
   for (const g of gs) {
     if (g.w === true) s.w++; else if (g.w === false) s.l++;
-    s.k += g.k; s.d += g.d; s.a += g.a; s.fb += g.fb || 0;
+    s.k += g.k; s.d += g.d; s.a += g.a; if (s.fb !== null) s.fb = g.fb == null ? null : s.fb + g.fb;   // HenrikDev 來的競技沒有首殺 → —
     s.hs += g.hs || 0; s.shots += (g.hs || 0) + (g.bs || 0) + (g.ls || 0);
     if (g.queue !== '團隊死鬥' && g.queue !== '死鬥' && g.rounds > 1) { s.score += g.score || 0; s.rounds += g.rounds; s.dmg += g.dmg || 0; }
   }

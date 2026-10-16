@@ -24,8 +24,9 @@ from discord import app_commands
 from discord.ext import commands
 
 from cogs.riot_api import RateLimiter
-from cogs.valo_live import MODE_RECENT, RiotLink, shard_from_env
-from cogs.valo_live_parse import eog_table, henrik_to_riot, mode_record, parse_match, rank_of, recent_line, riot_summarize
+from cogs.valo_live import COMP_RECENT, MODE_RECENT, RiotLink, shard_from_env
+from cogs.valo_live_parse import (eog_table, henrik_to_riot, mode_record, parse_match, rank_of, recent_line,
+                                  riot_summarize, stored_comp)
 from cogs.valo_parse import detail, mmr_summary, summarize
 
 log = logging.getLogger(__name__)
@@ -102,6 +103,11 @@ class HenrikApi:
 
     async def match(self, region: str, match_id: str):
         return await self.get(f'/valorant/v4/match/{region}/{quote(match_id, safe="")}', 86400)
+
+    async def stored_comp(self, region: str, puuid: str, size: int = 20):
+        """這人存在 HenrikDev 的競技對戰(新的在前，每場只有本人數據)：一個請求拿 20 場，比逐場抓 match-details 快很多。"""
+        return await self.get(f'/valorant/v1/by-puuid/stored-matches/{region}/{quote(puuid, safe="")}'
+                              f'?mode=competitive&size={int(size)}', 300)
 
     def remember_match(self, region: str, m: dict):
         """查列表時拿到的完整對戰順便存起來，點詳細時不用再打 API。"""
@@ -292,7 +298,8 @@ class ValoCog(commands.Cog):
                 {p: c[p][4] for p in puuids if p in c and c[p][4] is not None})
 
     async def _lookup_players(self, puuids: list[str], queue: str, push) -> tuple[dict, dict, dict, dict, dict]:
-        """同一場裡查過的人不重查。四階段各 push 一次：名字/牌位(1 秒) → 近 5 場(限速，約 20 秒) → 當前模式近 10 場 → 本 act 競技近 20 場。"""
+        """同一場裡查過的人不重查。名字/牌位(1 秒)先推，之後兩條線同時跑、各自查完就推：
+        近 5 場 → 當前模式近 10 場(Riot 逐場抓 match-details，限速，約 20 秒起跳)；本 act 競技近 20 場(HenrikDev，幾秒)。"""
         c = self._lookup_cache
         new = [p for p in puuids if p not in c]
         if new:
@@ -300,6 +307,11 @@ class ValoCog(commands.Cog):
             for p in new:
                 c[p] = [names.get(p) or {}, mmrs.get(p), None, None, None]
             push(*self._cached(puuids))
+        await asyncio.gather(self._lookup_history(puuids, queue, push), self._lookup_comp(puuids, push))
+        return self._cached(puuids)
+
+    async def _lookup_history(self, puuids: list[str], queue: str, push):
+        c = self._lookup_cache
         todo = [p for p in puuids if c[p][2] is None]      # 還沒有、或上次沒查完整(429)
         if todo:
             recents = await self.link.lookup_recent(todo, self.content)
@@ -312,12 +324,25 @@ class ValoCog(commands.Cog):
             for p in todo:
                 c[p][3] = mode_record(modes[p], queue) if modes.get(p) is not None else None
             push(*self._cached(puuids))
+
+    async def _lookup_comp(self, puuids: list[str], push):
+        """本 act 競技：HenrikDev stored-matches 一人一個請求；Henrik 查不到的人才退回 Riot 逐場抓(慢)。"""
+        c = self._lookup_cache
         todo = [p for p in puuids if c[p][4] is None]
+        if not todo:
+            return
+        season = await self.link.active_season()
+        if self.api:
+            got = await asyncio.gather(*[self.api.stored_comp(self.link.shard, p, COMP_RECENT) for p in todo])
+            for p, g in zip(todo, got):
+                c[p][4] = stored_comp(g, season, self.content)
+            push(*self._cached(puuids))
+        todo = [p for p in todo if c[p][4] is None]
         if todo:
-            comps = await self.link.lookup_comp(todo, self.content, await self.link.active_season())
+            comps = await self.link.lookup_comp(todo, self.content, season)
             for p in todo:
                 c[p][4] = comps.get(p)
-        return self._cached(puuids)
+            push(*self._cached(puuids))
 
     async def _live_tick(self) -> float:
         if not self.link or not await self.link.token():

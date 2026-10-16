@@ -281,3 +281,24 @@ def test_spike_self_damage_not_in_adr_hs_kast():
     assert me['kast'] == 50                            # R1 被包炸死不算被換；R2 存活
     assert me['fd'] == 0                               # R1 唯一的「擊殺」是自爆，不算被首殺
     assert match_summaries(d, CONTENT)['me']['dmg'] == 150
+
+
+def test_stored_comp_from_henrik():
+    """HenrikDev stored-matches → 跟 match_summaries 同格式；沒有首殺(None)；碰到上個 act 就停；None 原樣回。"""
+    from cogs.valo_live_parse import stored_comp
+
+    def m(season, team, red, blue, k=10):
+        return {'meta': {'season': {'id': season}, 'started_at': '2026-10-15T13:41:43.199Z'},
+                'stats': {'team': team, 'character': {'id': 'A1', 'name': 'Jett'}, 'score': 3000, 'kills': k,
+                          'deaths': 8, 'assists': 3, 'shots': {'head': 6, 'body': 30, 'leg': 4},
+                          'damage': {'made': 2000, 'received': 1500}},
+                'teams': {'red': red, 'blue': blue}}
+    out = stored_comp([m(SEASON, 'Blue', 11, 13), m(SEASON, 'Red', 11, 13, k=5), m('s-old', 'Red', 13, 2),
+                       m(SEASON, 'Red', 13, 0)], SEASON, CONTENT)
+    assert [g['w'] for g in out] == [True, False]
+    g = out[0]
+    assert (g['k'], g['d'], g['a'], g['rounds'], g['dmg'], g['score']) == (10, 8, 3, 24, 2000, 3000)
+    assert (g['hs'], g['bs'], g['ls'], g['fb']) == (6, 30, 4, None)
+    assert g['agent'] == '傑特' and g['queue'] == '競技' and g['t'] == 1792071703199
+    assert stored_comp(None, SEASON, CONTENT) is None
+    assert stored_comp([], SEASON, CONTENT) == []

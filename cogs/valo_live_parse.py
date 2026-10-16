@@ -1,4 +1,5 @@
 """進行中 Valorant 對局(GLZ pregame/core-game + PD mmr)的資料整理。純函式，方便測試。"""
+from datetime import datetime
 from typing import Optional
 
 QUEUE_ZH = {'competitive': '競技', 'unrated': '一般', 'swiftplay': '快速', 'spikerush': '搶攻',
@@ -130,6 +131,42 @@ def match_summaries(d: dict, content: dict) -> dict[str, dict]:
             'season': info.get('seasonId') or '',
         }
     return out
+
+
+def stored_comp(data: Optional[list], season: str, content: dict) -> Optional[list[dict]]:
+    """HenrikDev /v1/by-puuid/stored-matches(競技，新的在前) → 本 act 每場的 {w,k,d,a,...}，格式同 match_summaries。
+    它沒有首殺(fb 給 None，畫面顯示 —)；碰到不是本 act 的就停。data 是 None(沒查到)就回 None。"""
+    if data is None:
+        return None
+    agents = content.get('agents', {})
+    out = []
+    for m in data:
+        meta, st = m.get('meta') or {}, m.get('stats') or {}
+        sid = (meta.get('season') or {}).get('id') or ''
+        if season and sid and sid != season:
+            break
+        teams = {k.lower(): v or 0 for k, v in (m.get('teams') or {}).items()}
+        mine = (st.get('team') or '').lower()
+        other = next((v for k, v in teams.items() if k != mine), 0)
+        sh, dmg = st.get('shots') or {}, st.get('damage') or {}
+        aid = ((st.get('character') or {}).get('id') or '').lower()
+        t = meta.get('started_at') or ''
+        out.append({
+            'w': (teams[mine] > other) if mine in teams and teams[mine] != other else None,
+            'k': st.get('kills', 0), 'd': st.get('deaths', 0), 'a': st.get('assists', 0),
+            'score': st.get('score', 0), 'rounds': sum(teams.values()), 'dmg': dmg.get('made', 0),
+            'hs': sh.get('head', 0), 'bs': sh.get('body', 0), 'ls': sh.get('leg', 0), 'fb': None,
+            'agent': agents.get(aid, {}).get('name') or (st.get('character') or {}).get('name') or '?',
+            'agentId': aid, 'queue': QUEUE_ZH['competitive'], 't': _iso_ms(t), 'season': sid,
+        })
+    return out
+
+
+def _iso_ms(t: str) -> int:
+    try:
+        return int(datetime.fromisoformat(t.replace('Z', '+00:00')).timestamp() * 1000)
+    except ValueError:
+        return 0
 
 
 def mode_record(games: list[dict], queue_id: str) -> dict:

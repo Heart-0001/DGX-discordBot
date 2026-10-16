@@ -27,8 +27,8 @@ from discord.ext import commands
 from cogs.riot_api import RiotApi, league_to_ranks
 from cogs.lol_live_parse import (RECENT_N, fmt_length, live_text, mastery_text, match_live_players, parse_spectator,
                                  rank_text, recent_text)
-from cogs.lol_parse import (BUILD_SLOTS, EOG_PHASES, eog_missing, enrich_eog, INGAME_PHASES, parse_champselect, parse_eog, parse_live,
-                            parse_opgg_build, parse_profile, queue_name, riot_id, selection_champ_puuids,
+from cogs.lol_parse import (BUILD_SLOTS, EOG_PHASES, eog_missing, enrich_eog, INGAME_PHASES, parse_champselect, parse_eog,
+                            parse_history_eog, parse_live, parse_opgg_build, parse_profile, queue_name, riot_id, selection_champ_puuids,
                             session_champ_puuids, session_hidden_puuids, session_puuids)
 
 log = logging.getLogger(__name__)
@@ -403,6 +403,33 @@ class LolCog(commands.Cog):
         if isinstance(game, dict) and game.get('participants'):
             enrich_eog(eog, game)
 
+    async def _eog_from_history(self, why: str) -> bool:
+        """結算畫面資料沒抓到(太快離開結算、或 eog-stats-block 沒回隊伍) → 用對戰紀錄詳情組結算，最多試 10 次。
+        對戰紀錄第一次查可能要 ~22 秒，所以 timeout 給長一點。"""
+        gid = self.state.get('_eog_pending')
+        if not gid or (self.state.get('eog') or {}).get('gameId') == gid:
+            self.state.pop('_eog_pending', None)
+            return False
+        key = -int(gid)   # 跟 _enrich_eog 共用次數表，用負號分開
+        tries = self._enrich_tries.get(key, 0)
+        if tries >= 10:
+            self.state.pop('_eog_pending', None)
+            log.warning(f'🎮 結算退路放棄 {gid}：對戰紀錄試了 10 次都沒資料')
+            return False
+        self._enrich_tries[key] = tries + 1
+        game = await self.pc.lcu(f'/lol-match-history/v1/games/{int(gid)}', timeout=40)
+        eog = parse_history_eog(game, self.static.data, self.state.get('me') or '') if isinstance(game, dict) else None
+        if not eog or not eog.get('teams'):
+            log.info(f'🎮 結算退路({why}) {gid} 第 {tries + 1} 次：對戰紀錄還沒資料')
+            return False
+        eog['queue'] = self.state.get('queue')
+        self._save_last(eog)
+        self.state.pop('_eog_pending', None)
+        self.state['_eog_at'] = time.time()
+        log.info(f'🎮 結算退路({why}) {gid}：用對戰紀錄組出結算畫面')
+        self._set(phase='eog', sub='結算', eog=eog, live=None, champselect=None)
+        return True
+
     def _dump_json(self, path: str, d: dict):
         try:
             with open(path + '.tmp', 'w', encoding='utf-8') as f:
@@ -587,10 +614,15 @@ class LolCog(commands.Cog):
                 self._set(eog=eog)
 
         if phase != last_phase:
+            log.info(f'🎮 gameflow {last_phase} → {phase}')
             sess = await self.pc.lcu('/lol-gameflow/v1/session') or {}
             q = (sess.get('gameData') or {}).get('queue') or {}
             qid = q.get('id') or None
             self._set(queue={'id': qid, 'name': queue_name(qid, q.get('description', ''))} if qid else None)
+            if phase in INGAME_PHASES or phase in EOG_PHASES:
+                gid = (sess.get('gameData') or {}).get('gameId')
+                if gid and gid != (self.state.get('eog') or {}).get('gameId'):
+                    self.state['_eog_pending'] = gid   # 這場還沒有結算畫面；之後沒抓到就走對戰紀錄退路
             if phase in INGAME_PHASES:
                 self.state['_session_puuids'] = session_puuids(sess)
                 self.state['_session_champs'] = session_champ_puuids(sess)
@@ -650,9 +682,18 @@ class LolCog(commands.Cog):
                 if self.state.get('phase') != 'eog':
                     self.state['_eog_at'] = time.time()   # /act 自動模式：結算畫面保留幾分鐘再切回歌詞
                 self._set(phase='eog', sub='結算', eog=eog, live=None, champselect=None)
+                self.state.pop('_eog_pending', None)
+            else:
+                if self.state.get('_eog_raw_note') != (phase, str(raw)[:200]):
+                    self.state['_eog_raw_note'] = (phase, str(raw)[:200])
+                    log.info(f'🎮 {phase}：eog-stats-block 沒有隊伍資料 → {str(raw)[:200]}')
+                if phase == 'EndOfGame':   # WaitingForStats 時對戰紀錄一定還沒好，不浪費次數
+                    await self._eog_from_history('結算畫面沒資料')
             return POLL_ACTIVE
 
         # Lobby / Matchmaking / ReadyCheck / None：有上一場結算就繼續顯示
+        if self.state.get('_eog_pending'):
+            await self._eog_from_history('已離開結算')
         sub = {'Lobby': '房間中', 'Matchmaking': '配對中', 'ReadyCheck': '找到對戰',
                'None': '待機中'}.get(phase, phase)
         self._set(phase='eog' if self.state.get('eog') else 'idle', sub=sub, live=None, champselect=None)

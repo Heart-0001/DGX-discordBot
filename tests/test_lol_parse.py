@@ -314,3 +314,26 @@ def test_champselect_hidden_filled_from_selections():
     cs = parse_champselect(sess, 'me', {805: 'h1'})
     assert cs['team'][1]['hidden'] and cs['team'][1]['puuid'] == 'h1'
     assert parse_champselect(sess, 'me')['team'][1]['puuid'] is None
+
+
+def test_history_eog_fallback():
+    from cogs.lol_parse import parse_history_eog
+    def part(pid, team, cid, win, k):
+        return {'participantId': pid, 'teamId': team, 'championId': cid, 'spell1Id': 4, 'spell2Id': 32,
+                'stats': {'win': win, 'kills': k, 'deaths': 1, 'assists': 2, 'champLevel': 18,
+                          'totalMinionsKilled': 20, 'neutralMinionsKilled': 1, 'goldEarned': 9000,
+                          'totalDamageDealtToChampions': 30000, 'item0': 3084, 'item1': 0, 'item6': 2052,
+                          'playerAugment1': 1388, 'playerAugment2': 0}}
+    game = {'gameId': 7, 'gameDuration': 991, 'gameMode': 'KIWI',
+            'participants': [part(1, 100, 86, False, 3), part(2, 200, 72, True, 5)],
+            'participantIdentities': [{'participantId': 1, 'player': {'puuid': 'foe', 'gameName': 'Foe', 'tagLine': '2'}},
+                                      {'participantId': 2, 'player': {'puuid': 'me', 'gameName': 'Me', 'tagLine': '1'}}]}
+    e = parse_history_eog(game, {**STATIC, 'champNames': {'Garen': '蓋倫', 'Skarner': '史加納'}}, 'me')
+    assert e['gameId'] == 7 and e['win'] is True and e['length'] == 991
+    ally, enemy = e['teams']
+    assert ally['ally'] and ally['win'] and ally['kills'] == 5 and not enemy['ally'] and not enemy['win']
+    me = ally['players'][0]
+    assert me['me'] and me['name'] == 'Me' and me['champ'] == {'id': 72, 'key': 'Skarner', 'name': '史加納'}
+    assert me['cs'] == 21 and me['dmg'] == 30000 and me['items'] == [3084, 2052] and me['augments'] == [1388]
+    assert '_win' not in me and '_win' not in enemy['players'][0]
+    assert parse_history_eog({}, STATIC, 'me') is None

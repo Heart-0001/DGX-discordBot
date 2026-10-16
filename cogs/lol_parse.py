@@ -682,6 +682,47 @@ def parse_eog(d: dict, static: dict) -> dict:
     }
 
 
+def parse_history_eog(game: dict, static: dict, me_puuid: str) -> Optional[dict]:
+    """結算資料沒抓到時的退路：用 /lol-match-history/v1/games/{gameId} 組出跟 parse_eog 一樣的格式。"""
+    parts = (game or {}).get('participants') or []
+    if not parts:
+        return None
+    ids = {pi.get('participantId'): pi.get('player') or {} for pi in game.get('participantIdentities') or []}
+    by_team: dict[int, list] = {}
+    for p in parts:
+        st = p.get('stats') or {}
+        pl = ids.get(p.get('participantId')) or {}
+        cid = p.get('championId', 0)
+        key = static.get('champIdToKey', {}).get(str(cid), '')
+        by_team.setdefault(p.get('teamId'), []).append({
+            'puuid': pl.get('puuid'), 'name': pl.get('gameName', ''), 'tag': pl.get('tagLine', ''),
+            'me': bool(me_puuid) and pl.get('puuid') == me_puuid,
+            'champ': {'id': cid, 'key': key, 'name': static.get('champNames', {}).get(key, key)},
+            'level': st.get('champLevel', 0),
+            'k': st.get('kills', 0), 'd': st.get('deaths', 0), 'a': st.get('assists', 0),
+            'cs': st.get('totalMinionsKilled', 0) + st.get('neutralMinionsKilled', 0),
+            'gold': st.get('goldEarned', 0),
+            **{k: st.get(hk) for k, (_, hk) in EOG_EXTRA.items()},
+            'items': [st[f'item{i}'] for i in range(7) if st.get(f'item{i}')],
+            'augments': [st[f'playerAugment{i}'] for i in range(1, 7) if st.get(f'playerAugment{i}')],
+            'spells': [p.get('spell1Id'), p.get('spell2Id')],
+            '_win': bool(st.get('win')),
+        })
+    my_team = next((tid for tid, ps in by_team.items() if any(p['me'] for p in ps)), None)
+    teams = []
+    for tid, ps in by_team.items():
+        win = any([p.pop('_win') for p in ps])   # list：每個人的 _win 都要拿掉
+        teams.append({'ally': tid == my_team, 'win': win, 'kills': sum(p['k'] for p in ps), 'players': ps})
+    teams.sort(key=lambda t: not t['ally'])
+    return {
+        'gameId': game.get('gameId'),
+        'win': next((t['win'] for t in teams if t['ally']), None) if my_team is not None else None,
+        'length': game.get('gameDuration', 0),
+        'mode': game.get('gameMode', ''),
+        'teams': teams,
+    }
+
+
 # ── 玩家資料(等級、牌位、近期勝率) ──
 def rank(q: Optional[dict], division_key: str = 'division') -> Optional[dict]:
     """客戶端(division)與 Riot API(rank)的牌位都整理成同一格式。"""

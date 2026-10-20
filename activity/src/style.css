@@ -601,6 +601,81 @@ html.pip #lol.valo .lrow .c-rank .rank small { display: none; }
 #lol.valo .score .se { color: #ff7a7a; }
 #lol.valo .lrow .c-season { line-height: 1.2; }
 #lol.valo .lrow .c-season small { opacity: .6; }
+/* 比賽開始後：進階 TAB(Overwolf GEP) */
+#lol.valo .v-adv { display: flex; flex-direction: column; gap: 8px; overflow: auto; }
+#lol.valo .adv-tab { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(560px, 100%), 1fr)); gap: 8px; }
+#lol.valo .arow, #lol.valo .rrow { display: grid; align-items: center; gap: 8px; padding: 2px 10px; min-height: var(--row); border-top: 1px solid rgba(255, 255, 255, .05); font-variant-numeric: tabular-nums; }
+#lol.valo .arow { grid-template-columns: var(--row) minmax(0, 1fr) 5.4em 3.2em 4em 4.6em minmax(4.5em, 6em) 5.6em; }
+#lol.valo .arow > span, #lol.valo .rrow > span { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#lol.valo .arow.lhead, #lol.valo .rrow.lhead { min-height: 0; color: var(--mut); font-size: inherit; border-top: none; padding-top: 1px; padding-bottom: 1px; }
+#lol.valo .arow.lhead > span, #lol.valo .rrow.lhead > span { font-size: .8em; }
+#lol.valo .arow.lhead span:nth-child(n+3), #lol.valo .arow > span:nth-child(n+3) { text-align: center; }
+#lol.valo .arow.me, #lol.valo .rrow.me { background: rgba(255, 70, 85, .12); }
+#lol.valo .arow.dead { opacity: .45; }
+#lol.valo .arow .c-name .nm { font-weight: 700; }
+#lol.valo .arow .c-kda .d { color: #ff9a9a; }
+#lol.valo .arow .good b { color: #5fe08a; }
+#lol.valo .arow .bad b { color: #ff7a7a; }
+#lol.valo .arow .c-hsk b { color: #ffe08a; }
+#lol.valo .arow .c-money { color: #9be3b0; }
+#lol.valo .arow .c-wpn { color: var(--gold2); font-size: .9em; }
+#lol.valo .arow .c-ult { display: inline-flex; align-items: center; justify-content: center; gap: 4px; }
+#lol.valo .ultbar { display: inline-block; width: 2.6em; height: 5px; border-radius: 3px; background: rgba(255, 255, 255, .1); overflow: hidden; }
+#lol.valo .ultbar i { display: block; height: 100%; background: #7ff5e8; }
+#lol.valo .ult-ok { color: #7ff5e8; text-shadow: 0 0 8px rgba(127, 245, 232, .6); }
+#lol.valo .spike { margin-left: .3em; }
+#lol.valo .adv-mid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(220px, 300px); gap: 8px; }
+#lol.valo .adv-me, #lol.valo .adv-feed { border-radius: 8px; background: var(--panel); border: 1px solid var(--line); padding: 8px 10px; min-width: 0; }
+#lol.valo .adv-me { display: grid; grid-template-columns: auto auto minmax(0, 1fr); gap: 14px; align-items: center; }
+#lol.valo .adv-me.empty { display: flex; justify-content: center; }
+#lol.valo .am-fig { display: flex; align-items: center; gap: 8px; }
+#lol.valo .fig { width: clamp(36px, 8vh, 64px); height: auto; }
+#lol.valo .am-parts { display: flex; flex-direction: column; gap: 2px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+#lol.valo .am-parts b { color: #ff8a94; margin-right: .3em; }
+#lol.valo .am-parts small { margin-left: .4em; }
+#lol.valo .am-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(5.6em, 1fr)); gap: 6px; min-width: 15em; }
+#lol.valo .tile { display: flex; flex-direction: column; align-items: center; padding: 4px 6px; border-radius: 6px; background: rgba(0, 0, 0, .25); line-height: 1.2; white-space: nowrap; }
+#lol.valo .tile > b { font-size: 1.35em; color: var(--gold2); font-variant-numeric: tabular-nums; }
+#lol.valo .tile.good > b { color: #5fe08a; }
+#lol.valo .tile.bad > b { color: #ff7a7a; }
+#lol.valo .am-h { color: var(--mut); font-size: .8em; margin-bottom: 4px; }
+#lol.valo .am-rounds { min-width: 0; }
+#lol.valo .rbars { display: flex; align-items: flex-end; gap: 3px; height: clamp(48px, 11vh, 90px); }
+#lol.valo .rb { position: relative; flex: 1 1 0; max-width: 2.2em; height: 100%; display: flex; flex-direction: column; justify-content: flex-end; align-items: center; padding-bottom: 1em; }
+#lol.valo .rb i { display: block; width: 100%; min-height: 2px; border-radius: 3px 3px 0 0; background: linear-gradient(180deg, #ff4655, rgba(255, 70, 85, .35)); }
+#lol.valo .rb em { position: absolute; top: 0; font-style: normal; font-size: .62em; color: var(--mut); }
+#lol.valo .rb small { position: absolute; bottom: 0; font-size: .62em; }
+#lol.valo .rb:hover i { background: #ff8a94; }
+#lol.valo .adv-feed { display: flex; flex-direction: column; gap: 2px; overflow: hidden; font-size: .85em; }
+#lol.valo .kf { display: grid; grid-template-columns: 2.2em minmax(0, 1fr) auto minmax(0, 1fr); gap: 5px; align-items: center; white-space: nowrap; }
+#lol.valo .kf > span { overflow: hidden; text-overflow: ellipsis; }
+#lol.valo .kf .al { color: #8cc4ff; }
+#lol.valo .kf .en { color: #ff9a9a; text-align: right; }
+#lol.valo .kf .kw { color: var(--mut); font-size: .9em; }
+#lol.valo .kf .hs { color: #ffe08a; }
+#lol.valo .adv-rank { border-radius: 8px; background: var(--panel); border: 1px solid var(--line); overflow: hidden; }
+#lol.valo .adv-rank .team-h { background: rgba(0, 0, 0, .25); color: var(--gold2); }
+#lol.valo .adv-rank .team { border: 0; border-radius: 0; background: none; }
+#lol.valo .adv-rank .team.ally .lhead { color: #bcd9ff; }
+#lol.valo .adv-rank .team.enemy .lhead { color: #ffc4c4; }
+#lol.valo .rrow { --row: clamp(24px, 4.4vh, 40px); grid-template-columns: var(--row) minmax(6.5em, 1.2fr) minmax(6.5em, 1fr) minmax(7em, .9fr) 3em 3em 3em 3.2em 2.6em minmax(8em, 1.1fr); }
+#lol.valo .rrow .grp-c { background: rgba(255, 70, 85, .07); text-align: center; }
+#lol.valo .rrow.lhead span:nth-child(n+5):nth-child(-n+9) { text-align: center; }
+#lol.valo .rrow .c-name .cn { margin-left: .5em; color: var(--mut); }
+#lol.valo .rrow .c-rank { display: flex; align-items: center; gap: .4em; }
+#lol.valo .rrow .good b { color: #5fe08a; }
+#lol.valo .rrow .bad b { color: #ff7a7a; }
+@media (max-width: 1150px) {
+  #lol.valo .adv-mid { grid-template-columns: 1fr; }
+  #lol.valo .adv-me { grid-template-columns: auto minmax(0, 1fr); }
+  #lol.valo .am-rounds { grid-column: 1 / -1; }
+  #lol.valo .rrow { grid-template-columns: var(--row) minmax(6.5em, 1.2fr) minmax(6.5em, 1fr) minmax(7em, .9fr) 3em 3em 3em 3.2em 2.6em; }
+  #lol.valo .rrow .c-mode, #lol.valo .rrow.lhead span:last-child { display: none; }
+}
+html.pip #lol.valo .adv-mid, html.pip #lol.valo .adv-rank, html.pip #lol.valo .arow .c-wpn, html.pip #lol.valo .arow .c-ult, html.pip #lol.valo .arow .c-kd, html.pip #lol.valo .arow.lhead { display: none; }
+html.pip #lol.valo .v-adv { overflow: hidden; }
+html.pip #lol.valo .adv-tab { grid-template-columns: 1fr 1fr; gap: 4px; }
+html.pip #lol.valo .arow { grid-template-columns: var(--row) minmax(0, 1fr) auto auto auto; gap: 4px; padding: 0 5px; }
 
 /* ════════════════════════ 小歌詞條：遊戲畫面時放在頂列左邊(隊列名稱右邊的空位) ════════════════════════ */
 #mini { position: fixed; top: 5px; left: clamp(170px, 16vw, 280px); z-index: 4; max-width: calc(50vw - 330px); height: 32px;

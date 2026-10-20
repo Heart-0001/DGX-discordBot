@@ -24,6 +24,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from cogs.riot_api import RateLimiter
+from cogs.valo_gep import GepMatch
 from cogs.valo_live import COMP_RECENT, MODE_RECENT, RiotLink, shard_from_env
 from cogs.valo_live_parse import (eog_table, henrik_to_riot, mode_record, parse_match, rank_of, recent_line,
                                   riot_summarize, stored_comp)
@@ -210,7 +211,8 @@ class ValoCog(commands.Cog):
         self.version = 0
         self._changed = asyncio.Event()
         self.state: dict = {'phase': 'offline', 'sub': '啟動中', 'me': '', 'match': None,
-                            'recents': {}, 'modes': {}, 'comp': {}, 'eog': None, 'score': None}
+                            'recents': {}, 'modes': {}, 'comp': {}, 'eog': None, 'score': None, 'gep': None}
+        self._gep: Optional[GepMatch] = None       # 這場的 Overwolf 即時數據(進階 TAB)
         self._live_task: Optional[asyncio.Task] = None
         self._live_mid = ''                        # 目前對局 id
         self._live_hidden: set = set()
@@ -356,6 +358,8 @@ class ValoCog(commands.Cog):
                 # 剛打完：抓賽後計分板(資料可能要等幾秒才有)
                 self._eog_tries += 1
                 d = await self.link.pd(f'/match-details/v1/matches/{self._live_mid}')
+                if self._eog_tries == 1:
+                    await self._gep_tick(self._live_mid)   # 最後一回合的 round_report 在 game_end 才送
                 if d and (d.get('matchInfo') or {}).get('isCompleted'):
                     pu = [p['subject'] for p in d.get('players') or [] if p.get('subject')]
                     names = {p: c[0] for p, c in self._lookup_cache.items() if p in pu}
@@ -384,7 +388,9 @@ class ValoCog(commands.Cog):
             self._live_mid, self._live_hidden, self._eog_tries = mid, set(), 0
             self._lookup_cache.clear()
             self.state['eog'] = None
-        pl = m.get('Players') if kind == 'coregame' else (m.get('AllyTeam') or {}).get('Players')
+            self._gep = None
+            self._set(gep=None)
+        pl =m.get('Players') if kind == 'coregame' else (m.get('AllyTeam') or {}).get('Players')
         puuids = [p['Subject'] for p in pl or [] if p.get('Subject')]
         self._live_hidden |= {p['Subject'] for p in pl or [] if (p.get('PlayerIdentity') or {}).get('Incognito')}
         season = await self.link.active_season()
@@ -397,7 +403,18 @@ class ValoCog(commands.Cog):
         push(*await self._lookup_players(puuids, queue, push))
         if kind == 'coregame':
             self._set(score=await self.link.score())
+            await self._gep_tick(mid)
         return LIVE_POLL_MATCH
+
+    async def _gep_tick(self, mid: str):
+        """Overwolf GEP：每次只跟 PC 要上次之後的新行。PC 沒開 Overwolf 就一直是 None，畫面維持原本的表格。"""
+        if not mid:
+            return
+        if not self._gep or self._gep.mid != mid.lower():
+            self._gep = GepMatch(mid.lower())
+        out = await self.link.gep(mid, self._gep.since)
+        if out and self._gep.feed_text(out):
+            self._set(gep=self._gep.public(self.state.get('match')))
 
     def public_state(self) -> dict:
         return {k: v for k, v in self.state.items() if not k.startswith('_')}

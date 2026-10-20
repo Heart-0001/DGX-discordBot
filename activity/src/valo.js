@@ -1,5 +1,6 @@
 // Valorant 模式：選角(我方 5 人) / 對局中(雙方 10 人) / 賽後計分板 / 閒置。
-// 資料來源：valo/ws 推 {type:'state', phase, match, recents, modes, comp, eog}；圖示走同源 valo/img/*。
+// 資料來源：valo/ws 推 {type:'state', phase, match, recents, modes, comp, eog, gep}；圖示走同源 valo/img/*。
+// gep = PC 上 Overwolf 的即時數據(cogs/valo_gep.py)；有資料且比賽開始了就換成進階 TAB 版面。
 // 畫在跟 LoL 同一個 #lol 容器裡，加 class "valo" 換成 Valorant 配色。
 
 let root = null;
@@ -193,6 +194,120 @@ function viewMatch() {
     <div class="lol-body live-body v-teams"><div class="teams">${blocks}</div>${enemy}</div>`;
 }
 
+// ── 比賽開始後(Overwolf GEP 有資料)：上面進階 TAB + 我的命中，下面牌位 / 競技 / 目前模式(不放近 5 場) ──
+const SIDE = { attack: '攻', defense: '守' };
+
+// 進階 TAB 一列：K/D/A、爆頭擊殺(kill_feed 算的)、錢、手上的槍、大招；死掉的變暗
+function advRow(p, b) {
+  const kd = (b.k / Math.max(1, b.d)).toFixed(2);
+  const ult = b.ultMax ? (b.ult >= b.ultMax ? '<b class="ult-ok">大招</b>'
+    : `<span class="ultbar"><i style="width:${Math.round(b.ult * 100 / b.ultMax)}%"></i></span><small>${b.ult}/${b.ultMax}</small>`) : '';
+  return `<div class="arow${p.me ? ' me' : ''}${b.alive ? '' : ' dead'}">
+    <span class="c-champ">${agentImg(p, 'champ')}</span>
+    <span class="c-name"><span class="nm">${nameHtml(p)}</span>${b.spike ? '<span class="spike" title="帶包">💣</span>' : ''}</span>
+    <span class="c-kda"><b>${b.k}</b>/<b class="d">${b.d}</b>/<b>${b.a}</b></span>
+    <span class="c-kd ${cls3(+kd, 1.2, 0.8)}">${stat(kd)}</span>
+    <span class="c-hsk" title="爆頭擊殺(擊殺紀錄裡標爆頭的)">${b.hsk ? `<b>${b.hsk}</b><small>${b.k ? ` ${Math.round(b.hsk * 100 / b.k)}%` : ''}</small>` : '<span class="dim">0</span>'}</span>
+    <span class="c-money">${b.money == null ? '' : b.money ? `$${num(b.money)}` : '<span class="dim">$0</span>'}</span>
+    <span class="c-wpn">${esc(b.weapon)}</span>
+    <span class="c-ult">${ult}</span>
+  </div>`;
+}
+
+function advTeam(t) {
+  const board = state.gep.board || {};
+  const rows = t.players.filter((p) => board[p.puuid]).sort((x, y) => board[y.puuid].k - board[x.puuid].k
+    || board[x.puuid].d - board[y.puuid].d);
+  const missing = t.players.length - rows.length;
+  const kills = rows.reduce((s, p) => s + board[p.puuid].k, 0);
+  const head = `<div class="arow lhead"><span></span><span>玩家</span><span>K/D/A</span><span>K/D</span><span>爆頭殺</span><span>${t.mine ? '錢' : ''}</span><span>${t.mine ? '武器' : ''}</span><span>大招</span></div>`;
+  return `<div class="team ${t.mine ? 'ally' : 'enemy'}"><div class="team-h"><span>${t.mine ? '我方' : '敵方'}</span><small>擊殺 ${kills}${missing ? ` · ${missing} 人還沒資料` : ''}</small></div>
+    ${head}${rows.map((p) => advRow(p, board[p.puuid])).join('')}</div>`;
+}
+
+// 頭 / 身 / 腿：小人圖，顏色越深命中比例越高
+function bodySvg(t) {
+  const c = (v) => `rgba(255, 70, 85, ${(0.12 + 0.88 * (v || 0) / 100).toFixed(2)})`;
+  return `<svg class="fig" viewBox="0 0 60 120" aria-hidden="true">
+    <circle cx="30" cy="13" r="10" fill="${c(t.hsp)}"/>
+    <rect x="17" y="26" width="26" height="42" rx="6" fill="${c(t.bsp)}"/>
+    <rect x="6" y="28" width="9" height="36" rx="4" fill="${c(t.bsp)}"/><rect x="45" y="28" width="9" height="36" rx="4" fill="${c(t.bsp)}"/>
+    <rect x="18" y="70" width="11" height="46" rx="5" fill="${c(t.lsp)}"/><rect x="31" y="70" width="11" height="46" rx="5" fill="${c(t.lsp)}"/>
+  </svg>`;
+}
+
+function advMine() {
+  const g = state.gep;
+  const t = g.tot;
+  if (!t) return '<div class="adv-me empty"><span class="dim">第一回合打完後顯示你的命中數據</span></div>';
+  const pct = (v) => (v == null ? '—' : `${v}%`);
+  const tile = (label, val, sub = '', cls = '') => `<div class="tile ${cls}"><small>${label}</small><b>${val}</b>${sub ? `<small>${sub}</small>` : ''}</div>`;
+  const max = Math.max(1, ...g.rounds.map((r) => r.dmg));
+  const bars = g.rounds.map((r) => `<span class="rb" title="${esc(`R${r.n}　傷害 ${r.dmg}　命中 ${r.hit}（頭 ${r.hs}・身 ${r.bs}・腿 ${r.ls}）　受到 ${r.recv}${r.abil ? `　技能 ${r.abil}` : ''}`)}">
+      <i style="height:${Math.round(r.dmg * 100 / max)}%"></i><em>${r.dmg || ''}</em><small>${r.n}</small></span>`).join('');
+  return `<div class="adv-me">
+    <div class="am-fig">${bodySvg(t)}<div class="am-parts">
+      <span><b>頭</b> ${pct(t.hsp)}<small>${t.hs}</small></span><span><b>身</b> ${pct(t.bsp)}<small>${t.bs}</small></span><span><b>腿</b> ${pct(t.lsp)}<small>${t.ls}</small></span></div></div>
+    <div class="am-tiles">
+      ${tile('ADR', t.adr, `總傷害 ${num(t.dmg)}`, cls3(t.adr, 150, 100))}
+      ${tile('命中', t.hit, `每回合 ${(t.hit / t.rounds).toFixed(1)}`)}
+      ${tile('爆頭率', pct(t.hsp), `${t.hs} / ${t.hit} 發`, cls3(t.hsp, 25, 12))}
+      ${tile('受到傷害', num(t.recv), `每回合 ${Math.round(t.recv / t.rounds)}`)}
+      ${t.abil ? tile('技能傷害', num(t.abil)) : ''}
+    </div>
+    <div class="am-rounds"><div class="am-h">每回合傷害 <small>滑過看命中</small></div><div class="rbars">${bars}</div></div>
+  </div>`;
+}
+
+function advFeed() {
+  const fs = (state.gep.feed || []).slice().reverse();
+  if (!fs.length) return '<div class="adv-feed"><div class="am-h">擊殺紀錄</div><span class="dim">還沒有擊殺</span></div>';
+  const rows = fs.map((f) => `<div class="kf"><small>R${f.n}</small><span class="${f.at ? 'al' : 'en'}">${esc(f.a) || '—'}</span>
+    <span class="kw">${esc(f.w)}${f.hs ? ' <b class="hs" title="爆頭">◎</b>' : ''}</span><span class="${f.vt ? 'al' : 'en'}">${esc(f.v)}</span></div>`).join('');
+  return `<div class="adv-feed"><div class="am-h">擊殺紀錄</div>${rows}</div>`;
+}
+
+// 下半：牌位、競技本 act、目前模式(跟讀取畫面同一份資料，拿掉近 5 場)
+function rankRow(p) {
+  const r = p.rank || {};
+  const cg = (state.comp || {})[p.puuid];
+  const cs = cg === undefined ? undefined : cg.length ? aggregate(cg) : null;
+  const season = r.games ? `<span class="wr ${cls3(r.wr, 55, 45)}">${r.wins}勝${r.games - r.wins}敗 <b>${r.wr}%</b></span>` : '<span class="dim">—</span>';
+  const compN = cg === undefined ? '<span class="skel"></span>' : cg.length ? `<small class="dim">近${cg.length}場</small>` : '<small class="dim">本act沒打</small>';
+  const md = (state.modes || {})[p.puuid];
+  const mode = md === undefined ? '<span class="skel"></span>' : !md.n ? `<span class="dim"><small>${esc(state.match.queue)}</small> 沒紀錄</span>`
+    : md.w + md.l ? `<span class="wr ${cls3(Math.round(md.w * 100 / (md.w + md.l)), 55, 45)}"><small>${esc(md.q)}</small> 近${md.n} ${md.w}勝${md.l}敗 <b>${Math.round(md.w * 100 / (md.w + md.l))}%</b></span>`
+    : `<span class="wr"><small>${esc(md.q)}</small> 近${md.n} KDA <b>${md.kda}</b></span>`;
+  const peak = r.peak && r.peak > r.tier ? `<small>峰 ${esc(r.peakName)}</small>` : '';
+  return `<div class="rrow${p.me ? ' me' : ''}">
+    <span class="c-champ">${agentImg(p, 'champ xs')}</span>
+    <span class="c-name"><span class="nm">${nameHtml(p)}</span>${p.level ? `<small class="cn">Lv ${p.level}</small>` : ''}</span>
+    <span class="c-rank">${rankHtml(r)}${peak}</span>
+    <span class="c-season">${season} ${compN}</span>
+    ${statCells(cs, 'grp-c')}
+    <span class="c-mode">${mode}</span>
+  </div>`;
+}
+
+function rankTeam(t) {
+  const head = `<div class="rrow lhead"><span></span><span>${t.mine ? '我方' : '敵方'}</span><span>牌位</span><span>競技 本act</span>
+    <span>KDA</span><span title="競技平均每回合分數">ACS</span><span title="競技平均每回合傷害">ADR</span><span title="競技爆頭率">HS%</span><span title="競技首殺">首殺</span><span>目前模式</span></div>`;
+  return `<div class="team rk ${t.mine ? 'ally' : 'enemy'}">${head}${t.players.map(rankRow).join('')}</div>`;
+}
+
+function viewAdv() {
+  const m = state.match, g = state.gep;
+  const sc = state.score;
+  const score = sc && sc.ally != null ? `<span class="score" title="回合比數(我方 : 敵方)"><b class="sa">${sc.ally}</b> : <b class="se">${sc.enemy}</b></span>` : '';
+  const title = `<span class="lt-title">第 ${g.round} 回合</span>${SIDE[g.side] ? ` ${badge(SIDE[g.side] + '方', g.side === 'attack' ? 'bad' : 'party')}` : ''}`;
+  return `${header(title, score)}
+    <div class="lol-body live-body v-adv">
+      <div class="adv-tab">${m.teams.map(advTeam).join('')}</div>
+      <div class="adv-mid">${advMine()}${advFeed()}</div>
+      <div class="adv-rank"><div class="team-h"><span>牌位與戰績</span><small>競技 = 本 act 最近 20 場競技 · 目前模式 = 最近 10 場</small></div>${m.teams.map(rankTeam).join('')}</div>
+    </div>`;
+}
+
 function viewEog() {
   const e = state.eog;
   const mine = e.teams.find((t) => t.mine);
@@ -260,7 +375,8 @@ function render() {
   if (!root || !state) return;
   let view = 'idle', html;
   const ph = state.phase;
-  if ((ph === 'pregame' || ph === 'coregame') && state.match) { view = 'cs'; html = viewMatch(); }
+  if (ph === 'coregame' && state.match && state.gep && state.gep.started) { view = 'adv'; html = viewAdv(); }
+  else if ((ph === 'pregame' || ph === 'coregame') && state.match) { view = 'cs'; html = viewMatch(); }
   else if (ph === 'eog' && state.eog) { view = 'eog'; html = viewEog(); }
   else html = viewIdle();
   if (html === lastKey) return;

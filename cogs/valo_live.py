@@ -15,6 +15,7 @@ import base64
 import json
 import logging
 import os
+import re
 import time
 from typing import Optional
 
@@ -156,6 +157,15 @@ class RiotLink:
                 return {'ally': pr.get('partyOwnerMatchScoreAllyTeam'), 'enemy': pr.get('partyOwnerMatchScoreEnemyTeam'),
                         'type': m.get('gameScoreType'), 'state': m.get('sessionLoopState')}
         return None
+
+    async def gep(self, match_id: str, since: str) -> Optional[str]:
+        """Overwolf GEP log 裡這場對局、since 之後的行(riot-gate 的 owgep，格式見 valo_gep)。
+        PC 沒開 Overwolf / 這場沒記到 → 空字串；SSH 失敗 → None。"""
+        mid = (match_id or '').lower()
+        if not re.fullmatch(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}', mid) or not re.fullmatch(r'\d{1,17}', since):
+            return None
+        out = await self.pc._run(f'owgep {mid} {since}', timeout=15)
+        return out.decode('utf-8', errors='replace') if out is not None else None
 
     # ── 對局 ──
     async def current_match(self) -> Optional[tuple[str, dict]]:

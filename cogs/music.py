@@ -149,12 +149,12 @@ class MusicCog(commands.Cog):
                     'by': s.get('requested_by', '')}
         if state is None:
             return {'current': None, 'queue': [], 'total': 0, 'autoplay': None, 'paused': False, 'repeat': 'off',
-                    'channel': vc.channel.id if vc and vc.channel else None}
+                    'volume': round(GuildMusicState.volume * 100), 'channel': vc.channel.id if vc and vc.channel else None}
         return {
             'current': item(state.current) if state.current else None,
             'queue': [item(s) for s in state.queue[:limit]], 'total': len(state.queue),
             'autoplay': item(state.autoplay_prefetch) if state.autoplay and state.autoplay_prefetch else None,
-            'paused': bool(vc and vc.is_paused()), 'repeat': state.repeat,
+            'paused': bool(vc and vc.is_paused()), 'repeat': state.repeat, 'volume': round(state.volume * 100),
             'channel': vc.channel.id if vc and vc.channel else None,
         }
 
@@ -213,8 +213,8 @@ class MusicCog(commands.Cog):
         return f'🎵 正在播放：{first["title"]}' + (f'(還有 {len(rest)} 首已加入隊列)' if rest else '')
 
     def web_control(self, guild: 'discord.Guild', member: 'discord.Member', action: str,
-                    index: Optional[int] = None, url: str = '') -> str:
-        """Activity 的暫停 / 繼續 / 跳過 / 移除。remove 用位置 + 網址比對，避免別人剛好動過佇列刪錯首。"""
+                    index: Optional[int] = None, url: str = '', level: Optional[int] = None) -> str:
+        """Activity 的暫停 / 繼續 / 跳過 / 移除 / 音量。remove 用位置 + 網址比對，避免別人剛好動過佇列刪錯首。"""
         err = self._check_member(guild, member)
         if err:
             raise ValueError(err)
@@ -243,6 +243,13 @@ class MusicCog(commands.Cog):
                 raise ValueError('佇列已經變了，請再試一次')
             s = q.pop(index)
             return f'🗑️ 已移除：{s["title"]}'
+        if action == 'volume':
+            if not isinstance(level, int) or not 0 <= level <= 100:
+                raise ValueError('音量必須在 0 到 100 之間')
+            state.volume = level / 100
+            if vc and vc.source and isinstance(vc.source, discord.PCMVolumeTransformer):   # 跟 /volume 一樣，正在播的立刻生效
+                vc.source.volume = state.volume
+            return f'🔊 音量 {level}%'
         raise ValueError('不支援的操作')
 
     @staticmethod

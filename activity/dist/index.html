@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>同步歌詞</title>
   <link rel="icon" href="data:,">
-  <link rel="stylesheet" href="style.css?v=1792492418">
+  <link rel="stylesheet" href="style.css?v=1792494101">
 </head>
 <body>
   <div id="bg"><img id="bg-img" alt=""><img id="bg-img2" alt=""></div>
@@ -23,6 +23,7 @@
       <div id="controls">
         <button id="c-play" class="act" title="暫停 / 繼續">⏸</button>
         <button id="c-skip" class="act" title="跳過這首">⏭</button>
+        <label id="vol" title="音量"><span id="vol-ic">🔊</span><input id="vol-in" class="act" type="range" min="0" max="100" step="1" value="50"><span id="vol-val">50</span></label>
       </div>
     </section>
     <section id="lyrics-wrap">
@@ -50,6 +51,6 @@
   <div id="toast"></div>
   <div id="lol" hidden></div>
   <div id="mini" hidden><img id="mini-cover" alt=""><div id="mini-text"><div id="mini-title"></div><div id="mini-line"></div></div></div>
-  <script type="module" src="main.js?v=1792492418"></script>
+  <script type="module" src="main.js?v=1792494101"></script>
 </body>
 </html>

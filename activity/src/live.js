@@ -5,6 +5,7 @@ const $ = (id) => document.getElementById(id);
 const EMOJIS = ['👍', '😂', '🔥', '😭', '❤️', '🎉', '👏', '💀', '🤯', '😎'];
 const MAX_FLOAT = 40;          // 同時飄在畫面上的表情上限
 const TOAST_MS = 3200;
+const VOL_GAP = 150;           // ms：拖音量條時送出的最短間隔
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const fmt = (s) => { s = Math.max(0, Math.floor(s || 0)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
@@ -16,6 +17,8 @@ let me = null;          // 登入的名字；null = 沒登入
 let canAuth = false;
 let queue = null;       // 最後一份 {type:'queue', current, queue, total, autoplay, paused, repeat}
 let target = { g: '', c: '' };
+let volDrag = false;    // 正在拖音量條：別被伺服器推來的舊值拉回去
+let volSent = 0;
 
 // ── 登入：authorize → 後端換 token → authenticate ──
 export async function login(sdk, clientId) {
@@ -123,6 +126,15 @@ function bindQueue() {
   };
   $('q-form').onsubmit = (ev) => { ev.preventDefault(); add(false); };
   $('q-next').onclick = () => add(true);
+  // 音量：拖的途中每 VOL_GAP 毫秒送一次(quiet，不廣播)，放開才送正式的那次
+  const vol = $('vol-in');
+  vol.addEventListener('input', () => {
+    volDrag = true;
+    showVol(+vol.value);
+    const now = performance.now();
+    if (now - volSent >= VOL_GAP) { volSent = now; send({ type: 'music', action: 'volume', level: +vol.value, quiet: true }); }
+  });
+  vol.addEventListener('change', () => { volDrag = false; send({ type: 'music', action: 'volume', level: +vol.value }); });
   $('c-play').onclick = () => send({ type: 'music', action: queue && queue.paused ? 'resume' : 'pause' });
   $('c-skip').onclick = () => send({ type: 'music', action: 'skip' });
   $('q-list').addEventListener('click', (ev) => {
@@ -147,9 +159,15 @@ function songRow(s, i) {
   return `<li>${thumb}<div class="qt"><span>${esc(s.title)}</span><small>${fmt(s.duration)}${s.by ? `・${esc(s.by)} 點的` : ''}</small></div>${rm}</li>`;
 }
 
+function showVol(v) {
+  $('vol-val').textContent = v;
+  $('vol-ic').textContent = v === 0 ? '🔇' : v < 40 ? '🔈' : v < 75 ? '🔉' : '🔊';
+}
+
 function renderQueue() {
   const q = queue;
   $('q-count').textContent = q && q.total ? ` ${q.total}` : '';
+  if (q && q.volume != null && !volDrag) { $('vol-in').value = q.volume; showVol(q.volume); }   // 別人調的也跟著動
   $('c-play').textContent = q && q.paused ? '▶' : '⏸';
   $('c-play').title = q && q.paused ? '繼續播放' : '暫停';
   if (!q) return;

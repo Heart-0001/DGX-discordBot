@@ -8,7 +8,8 @@
 WebSocket api/live?g=伺服器&c=頻道&sid=
   下行 {type:'me', user, canAuth}；{type:'queue', ...MusicCog.queue_view}(變了才送)；
        {type:'react', emoji, name}(同頻道全部人)；{type:'toast', text, ok}
-  上行 {type:'react', emoji}；{type:'music', action:'pause'|'resume'|'skip'|'remove', index, url}；{type:'add', query, next}
+  上行 {type:'react', emoji}；{type:'music', action:'pause'|'resume'|'skip'|'remove'|'volume', index, url, level, quiet}；
+       {type:'add', query, next}
 權限：在場的人都能按表情；音樂操作要在語音頻道裡(bot 已在別的頻道就要同一個)，規則在 MusicCog._check_member。
 """
 import asyncio
@@ -180,12 +181,15 @@ class ActLiveCog(commands.Cog):
             pass
 
     async def _music(self, ws, cid: int, guild: discord.Guild, member: discord.Member, music, m: dict):
-        idx = m.get('index')
+        idx, level = m.get('index'), m.get('level')
         try:
             text = music.web_control(guild, member, str(m.get('action') or ''),
-                                     index=idx if isinstance(idx, int) else None, url=str(m.get('url') or ''))
+                                     index=idx if isinstance(idx, int) else None, url=str(m.get('url') or ''),
+                                     level=level if isinstance(level, int) else None)
         except ValueError as e:
             await self._toast(ws, str(e), False)
+            return
+        if m.get('quiet'):   # 拖音量條途中：只套用，放開時(不帶 quiet)才廣播
             return
         log.info(f'🎛️ Activity {member.display_name}: {text}')
         await self._broadcast(cid, {'type': 'toast', 'text': f'{member.display_name}　{text}', 'ok': True})

@@ -99,6 +99,16 @@ class TestControl(unittest.TestCase):
         with self.assertRaises(ValueError):
             cog.web_control(guild, member(), 'remove', index=5)
 
+    def test_volume(self):
+        cog, guild, vc = setup_cog()
+        self.assertIn('30%', cog.web_control(guild, member(), 'volume', level=30))
+        self.assertEqual(cog.get_state(1).volume, 0.3)
+        self.assertEqual(vc.source.volume, 0.3)                    # 正在播的立刻生效
+        self.assertEqual(cog.queue_view(1)['volume'], 30)
+        for bad in (None, -1, 101):
+            with self.assertRaises(ValueError):
+                cog.web_control(guild, member(), 'volume', level=bad)
+
     def test_unknown_action(self):
         cog, guild, _ = setup_cog()
         with self.assertRaises(ValueError):

@@ -191,6 +191,22 @@ button:disabled { opacity: .35; cursor: not-allowed; }
 #toast.show { opacity: 1; transform: translate(-50%, 0); }
 #toast.ok { border-left: 3px solid #5fe08a; }
 #toast.bad { border-left: 3px solid #ff7a7a; }
+#vol { display: flex; align-items: center; gap: 6px; margin-left: 6px; flex: 1; max-width: 240px; font-size: 15px; }
+#vol-in { flex: 1; min-width: 60px; accent-color: #fff; cursor: pointer; }
+#vol-in:disabled { cursor: not-allowed; opacity: .35; }
+#vol-val { min-width: 2em; font-size: 12px; color: rgba(255, 255, 255, .6); font-variant-numeric: tabular-nums; }
+/* 寬畫面的歌詞模式：佇列固定在右邊一欄(不用按按鈕)；窄畫面 / 小視窗還是右上角按鈕開抽屜 */
+@media (min-width: 1000px) {
+  html:not(.mode-lol):not(.pip) { --dock: clamp(260px, 22vw, 320px); }
+  html:not(.mode-lol):not(.pip) #app { margin-right: var(--dock); padding-right: 3vw; }
+  html:not(.mode-lol):not(.pip) #qpanel, html:not(.mode-lol):not(.pip) #qpanel[hidden] { display: flex; width: var(--dock); padding: 12px;
+    background: rgba(10, 10, 14, .5); backdrop-filter: blur(14px); box-shadow: none; z-index: 4; }
+  html:not(.mode-lol):not(.pip) #q-fab, html:not(.mode-lol):not(.pip) #q-close { display: none; }
+  html:not(.mode-lol):not(.pip) #qpanel li { grid-template-columns: 48px minmax(0, 1fr) auto; }
+  html:not(.mode-lol):not(.pip) #qpanel li img, html:not(.mode-lol):not(.pip) #qpanel .nothumb { width: 48px; height: 27px; }
+  html:not(.mode-lol):not(.pip) #react-bar, html:not(.mode-lol):not(.pip) #toast { left: calc((100% - var(--dock)) / 2); }
+  html:not(.mode-lol):not(.pip) #offset { right: calc(var(--dock) + 14px); }
+}
 html.mode-lol #q-fab, html.mode-lol #qpanel, html.mode-lol #controls { display: none; }
 /* 遊戲畫面資料很滿：表情列縮成右下角一顆，滑過去才展開 */
 html.mode-lol #react-bar { left: auto; right: 12px; transform: none; opacity: .55; }

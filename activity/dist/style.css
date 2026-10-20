@@ -192,6 +192,10 @@ button:disabled { opacity: .35; cursor: not-allowed; }
 #toast.ok { border-left: 3px solid #5fe08a; }
 #toast.bad { border-left: 3px solid #ff7a7a; }
 html.mode-lol #q-fab, html.mode-lol #qpanel, html.mode-lol #controls { display: none; }
+/* 遊戲畫面資料很滿：表情列縮成右下角一顆，滑過去才展開 */
+html.mode-lol #react-bar { left: auto; right: 12px; transform: none; opacity: .55; }
+html.mode-lol #react-bar:not(:hover) button:not(:first-child) { display: none; }
+html.mode-lol #react-bar:hover { opacity: 1; }
 html.pip #q-fab, html.pip #qpanel, html.pip #react-bar, html.pip #controls, html.pip #toast { display: none; }
 
 @media (prefers-reduced-motion: reduce) {
@@ -442,6 +446,39 @@ html.pip #lol .predict { display: none; }
 #lol .ev i { font-style: normal; font-size: .85em; }
 #lol .ev i.al { color: var(--ally); }
 #lol .ev i.en { color: var(--enemy); }
+/* 計時列(大型野怪 / 兵營 / 補包)：放在頂列下面，字放大方便一眼看 */
+#lol .objbar { flex: none; display: flex; flex-wrap: wrap; gap: 8px; padding: 8px 16px 0; }
+#lol .obj { flex: 1 1 0; min-width: 150px; max-width: 280px; display: flex; align-items: center; gap: 10px; padding: 6px 12px; border-radius: 10px;
+  background: var(--panel); border: 1px solid var(--line); border-left: 4px solid rgba(255, 255, 255, .25); }
+#lol .obj.s-ally { border-left-color: var(--ally); }
+#lol .obj.s-enemy { border-left-color: var(--enemy); }
+#lol .o-ic { font-size: clamp(22px, 3.6vh, 34px); line-height: 1; }
+#lol .o-tx { display: flex; flex-direction: column; min-width: 0; flex: 1; line-height: 1.2; }
+#lol .o-lb { font-weight: 700; color: var(--gold2); white-space: nowrap; }
+#lol .o-tx small { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#lol .o-t { font-size: clamp(20px, 3.4vh, 32px); font-weight: 800; font-variant-numeric: tabular-nums; color: var(--gold2); white-space: nowrap; }
+#lol .obj.soon { box-shadow: 0 0 0 1px rgba(240, 201, 106, .6), 0 0 16px rgba(240, 201, 106, .25); }
+#lol .obj.soon .o-t { color: #f0c96a; }
+#lol .obj.up { background: linear-gradient(90deg, rgba(95, 224, 138, .18), var(--panel)); }
+#lol .obj.up .o-t { color: #5fe08a; font-size: clamp(16px, 2.6vh, 24px); }
+/* 下排：左邊聊天室、右邊出裝預測 */
+#lol .lowrow { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(260px, 34%) minmax(0, 1fr); gap: 8px; }
+#lol .lowrow .predict { min-height: 0; }
+#lol .chat { min-height: 0; display: flex; flex-direction: column; border-radius: 8px; background: var(--panel); border: 1px solid var(--line); overflow: hidden; }
+#lol .chat .team-h { color: var(--gold); background: linear-gradient(90deg, rgba(200, 170, 110, .22), transparent); }
+#lol .chat .team-h small { letter-spacing: 0; font-weight: 400; color: var(--mut); }
+#lol .chat ul { list-style: none; flex: 1; min-height: 0; overflow-y: auto; padding: 4px 8px; display: flex; flex-direction: column; gap: 2px; scrollbar-width: none; }
+#lol .cm { display: flex; gap: 6px; font-size: .92em; line-height: 1.35; }
+#lol .cm time { flex: none; color: var(--mut); font-variant-numeric: tabular-nums; }
+#lol .cm b { font-weight: 700; }
+#lol .cm b.al { color: var(--ally); }
+#lol .cm b.en { color: var(--enemy); }
+#lol .cm small { margin: 0 1px; }
+#lol .cm.sys span { color: var(--mut); font-style: italic; }
+@media (max-width: 1100px) { #lol .lowrow { grid-template-columns: 1fr; } #lol .lowrow .predict { display: none; } }
+html.pip #lol .objbar { padding: 2px 6px 0; gap: 4px; }
+html.pip #lol .obj { min-width: 0; padding: 2px 6px; gap: 4px; }
+html.pip #lol .o-tx small, html.pip #lol .lowrow { display: none; }
 #lol .ev.k-kill.ally { border-left-color: var(--ally); }
 #lol .ev.k-kill.enemy { border-left-color: var(--enemy); }
 #lol .ev.k-multikill { border-left-color: #ff9f40; color: #ffd0a0; }

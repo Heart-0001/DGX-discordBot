@@ -30,6 +30,7 @@ from cogs.lol_live_parse import (RECENT_N, fmt_length, live_text, mastery_text, 
 from cogs.lol_parse import (BUILD_SLOTS, EOG_PHASES, eog_missing, enrich_eog, INGAME_PHASES, parse_champselect, parse_eog,
                             parse_history_eog, parse_live, parse_opgg_build, parse_profile, queue_name, riot_id, selection_champ_puuids,
                             session_champ_puuids, session_hidden_puuids, session_puuids)
+from cogs.lol_timers import PoroFeed, objective_timers
 
 log = logging.getLogger(__name__)
 
@@ -51,6 +52,8 @@ LOL_DIR = os.getenv('LOL_INSTALL_DIR', r'D:\Riot Games\League of Legends')
 POLL_IDLE = 5        # 秒：沒在遊戲時看 gameflow 的間隔
 POLL_ACTIVE = 2      # 秒：選角 / 遊戲中
 POLL_OFFLINE = 15    # 秒：PC 連不上或客戶端沒開
+POLL_PORO = 4        # 秒：遊戲中跟 PC 要 Porofessor log(補包、聊天室)的間隔
+PORO_SLACK = 30      # 秒：這場開始前多早的 log 行就算上一場
 PROFILE_TTL = 600    # 秒：玩家資料快取
 HISTORY_COUNT = 100  # 近期勝率看幾場(客戶端最多只給最近 100 場，分頁參數無效)
 
@@ -292,6 +295,9 @@ class LolCog(commands.Cog):
         self._builds: dict[str, dict] = {}              # 英雄 id → {'at', 'build'}
         self._build_jobs: dict[str, asyncio.Task] = {}
         self._build_sem = asyncio.Semaphore(3)
+        self._poro: Optional[PoroFeed] = None            # 這場的 Porofessor log(補包、聊天室)
+        self._poro_t = 0.0                               # 上一輪的遊戲時間(倒退 = 換場)
+        self._poro_at = 0.0
         self._load_last()
         self._load_builds()
 
@@ -656,6 +662,9 @@ class LolCog(commands.Cog):
                 self._dump_raw(d)
                 live = parse_live(d, self.static.data, self._name_to_puuid, self.builds(),
                                   self.state.get('_session_champs'), self.state.get('_session_hidden'))
+                await self._poro_tick(d)
+                live['timers'] = objective_timers(d, self._poro)
+                live['chat'] = list(self._poro.chat) if self._poro else []
                 self._want_builds([p['champ']['id'] for p in live['players']])
                 self._set(phase='ingame', sub='遊戲中', live=live, champselect=None)
                 self._want_mastery([(p['puuid'], p['champ']['id']) for p in live['players']])
@@ -701,6 +710,22 @@ class LolCog(commands.Cog):
         self.state.pop('_session_champs', None)
         self.state.pop('_session_hidden', None)
         return POLL_ACTIVE if phase in ('Matchmaking', 'ReadyCheck') else POLL_IDLE
+
+    async def _poro_tick(self, d: dict):
+        """Porofessor 的 Overwolf log(riot-gate 的 `poro <since>`)：補包狀態、聊天室。PC 沒開 Porofessor 就一直是空的。
+        遊戲時間倒退 = 換了一場 → 從「這場開始前一點」重新讀，上一場的行不會混進來。"""
+        t = (d.get('gameData') or {}).get('gameTime') or 0
+        if self._poro is None or t + 5 < self._poro_t:
+            start = time.localtime(time.time() - t - PORO_SLACK)   # PC 的 log 是本地時間，DGX 跟 PC 同時區
+            self._poro = PoroFeed(time.strftime('%Y%m%d%H%M%S', start) + '000')
+            self._poro_at = 0.0
+        self._poro_t = t
+        if time.monotonic() - self._poro_at < POLL_PORO:
+            return
+        self._poro_at = time.monotonic()
+        out = await self.pc._run(f'poro {self._poro.since}', timeout=10)
+        if out:
+            self._poro.feed_text(out.decode('utf-8', errors='replace'))
 
     def public_state(self) -> dict:
         return {k: v for k, v in self.state.items() if not k.startswith('_')}

@@ -248,6 +248,35 @@ function bar(cur, max, cls) {
   return `<div class="sbar ${cls}"><div style="width:${pct}%"></div><span>${num(Math.round(cur))} / ${num(Math.round(max))}</span></div>`;
 }
 
+// 大型野怪 / 兵營 / 補包計時(後端 cogs/lol_timers.py 算出下次出現的遊戲秒數 at，這裡倒數)
+const OBJ_ICON = { dragon: '🐉', grubs: '🪲', herald: '👁', baron: '🟣', inhib: '🏰', relic: '❤️' };
+const OBJ_UP = { inhib: '已重生', relic: '可以吃' };   // 倒數到 0 顯示什麼(其他都是「已出現」)
+function timersHtml(L) {
+  const ts = L.timers || [];
+  if (!ts.length) return '';
+  const chips = ts.map((t) => {
+    const kind = t.key.split(':')[0];
+    const side = t.side ? ` s-${t.side}` : '';
+    return `<div class="obj k-${kind}${side}" data-at="${t.at ?? ''}" data-up="${OBJ_UP[kind] || '已出現'}" title="${esc(t.note ? `${t.label}　${t.note}` : t.label)}">
+      <span class="o-ic">${OBJ_ICON[kind] || '⏱'}</span>
+      <div class="o-tx"><span class="o-lb">${esc(t.label)}</span>${t.note ? `<small>${esc(t.note)}</small>` : ''}</div>
+      <b class="o-t">${t.at == null ? '—' : ''}</b></div>`;
+  }).join('');
+  return `<div class="objbar">${chips}</div>`;
+}
+
+// 聊天室(Porofessor 的 Overwolf log)：英雄名對到這場的玩家 → 我方藍、敵方紅
+function chatHtml(L) {
+  const side = {};
+  for (const p of L.players) if (p.champ?.name) side[p.champ.name] = p.ally ? 'al' : 'en';
+  const msgs = (L.chat || []).slice().reverse();
+  const rows = msgs.map((c) => (c.sys
+    ? `<li class="cm sys"><time>${mmss(c.t)}</time><span>${esc(c.text)}</span></li>`
+    : `<li class="cm"><time>${mmss(c.t)}</time><span><b class="${side[c.champ] || ''}">${esc(c.who)}</b><small>(${esc(c.champ)})</small>：${esc(c.text)}</span></li>`)).join('');
+  return `<section class="chat"><div class="team-h"><span>聊天室</span><small>Porofessor</small></div>
+    <ul>${rows || '<li class="cm sys dim">還沒有訊息(要開著 Porofessor)</li>'}</ul></section>`;
+}
+
 function viewLive() {
   const L = state.live;
   const ally = L.players.filter((p) => p.ally), enemy = L.players.filter((p) => !p.ally);
@@ -268,11 +297,12 @@ function viewLive() {
     <div class="team-h sub"><span>敵方下一件預測</span><small>op.gg 常出裝 + 目前零件</small></div>
     <div class="pgrid">${enemy.map(predictCell).join('')}</div></section>`;
   return `${header(center, self ? `<span class="hdr-gold">${num(Math.floor(self.gold))} 金</span>` : '')}
+    ${timersHtml(L)}
     <div class="lol-body live-body">
       <div class="teams">
         ${teamBlock('我方', 'ally', colh + ally.map(liveRow).join(''), `<b>${L.kills?.ally ?? 0} 殺 · ${kGold(ga)}</b>`)}
         ${teamBlock('敵方', 'enemy', enemy.map(liveRow).join(''), `<b>${L.kills?.enemy ?? 0} 殺 · ${kGold(ge)}</b>`)}
-        ${predict}
+        <div class="lowrow">${chatHtml(L)}${predict}</div>
       </div>
       <aside class="side">${selfHtml}<div class="feed"><div class="feed-h">即時事件</div><ul>${evs}</ul></div></aside>
     </div>`;
@@ -357,6 +387,14 @@ function tick() {
   for (const r of root.querySelectorAll('.respawn')) {
     const left = Math.max(0, Math.ceil(Number(r.dataset.respawn) - el));
     r.textContent = left || '';
+  }
+  const now = clockBase.time + Math.min(el, 15);
+  for (const o of root.querySelectorAll('.obj[data-at]')) {
+    if (o.dataset.at === '') continue;
+    const left = Number(o.dataset.at) - now;
+    o.classList.toggle('up', left <= 0);
+    o.classList.toggle('soon', left > 0 && left <= 60);
+    o.querySelector('.o-t').textContent = left <= 0 ? o.dataset.up : mmss(Math.ceil(left));
   }
 }
 

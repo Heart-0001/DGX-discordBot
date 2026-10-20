@@ -85,6 +85,9 @@ class LyricsCog(commands.Cog):
         app.router.add_get('/api/thumb', self._h_thumb)
         app.router.add_get('/ws', self._h_ws)
         app.router.add_get('/api/mode', self._h_mode)
+        app.router.add_post('/api/token', self._h_act)
+        app.router.add_get('/api/live', self._h_act)
+        app.router.add_get('/api/ytthumb/{tail}', self._h_act)
         app.router.add_get('/lol/{tail:.*}', self._h_lol)
         app.router.add_get('/valo/{tail:.*}', self._h_valo)
         app.router.add_get('/', self._h_index)
@@ -277,7 +280,7 @@ class LyricsCog(commands.Cog):
     @staticmethod
     async def _no_cache(request, response):
         """Cloudflare 預設會把 .js/.css 快取 4 小時，改版後看不到；封面除外(有自己的 max-age)。"""
-        if not request.path.startswith(('/api/thumb', '/lol/img/', '/valo/img/')):
+        if not request.path.startswith(('/api/thumb', '/api/ytthumb/', '/lol/img/', '/valo/img/')):
             response.headers['Cache-Control'] = 'no-cache'
 
     async def _h_index(self, request):
@@ -331,6 +334,13 @@ class LyricsCog(commands.Cog):
         if not valo:
             raise web.HTTPServiceUnavailable(text='Valorant 模組未載入')
         return await valo.handle(request, request.match_info['tail'])
+
+    async def _h_act(self, request):
+        """互動(登入、點歌、表情反應)：交給 cogs/act_live.py。"""
+        act = self.bot.get_cog('ActLiveCog')
+        if not act:
+            raise web.HTTPServiceUnavailable(text='互動模組未載入')
+        return await act.handle(request)
 
     def _snapshot(self, guild_id: int) -> Optional[dict]:
         music = self.bot.get_cog('MusicCog')

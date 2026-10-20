@@ -82,7 +82,7 @@ function gamesHtml(puuid, chips = false) {
 function playerCard(p, chips = false) {
   const r = p.rank;
   const lvl = p.level ? `Lv ${p.level}` : '';
-  return `<div class="pcard${p.me ? ' me' : ''}">
+  return `<div data-pu="${esc(p.puuid)}" class="pcard clk${p.me ? ' me' : ''}">
     ${agentImg(p)}
     <div class="pc-info">
       <div class="pc-name">${nameHtml(p)}</div>
@@ -162,7 +162,7 @@ function liveRow(p) {
     : md.w + md.l ? `<span class="wr ${cls3(Math.round(md.w * 100 / (md.w + md.l)), 55, 45)}"><small>${esc(md.q)}</small> 近${md.n} ${md.w}勝${md.l}敗 <b>${Math.round(md.w * 100 / (md.w + md.l))}%</b></span>`
     : `<span class="wr"><small>${esc(md.q)}</small> 近${md.n} KDA <b>${md.kda}</b></span>`;
   const peak = r.peak && r.peak > r.tier ? `<small>峰 ${esc(r.peakName)}</small>` : '';
-  return `<div class="lrow${p.me ? ' me' : ''}">
+  return `<div data-pu="${esc(p.puuid)}" class="lrow clk${p.me ? ' me' : ''}">
     <span class="c-champ">${agentImg(p, 'champ')}</span>
     <span class="c-name"><span class="nm">${nameHtml(p)}</span><small class="cn">${esc(p.agent)}${p.locked === false ? '…' : ''}${p.level ? ` · Lv ${p.level}` : ''}</small></span>
     <span class="c-rank">${rankHtml(r)}${peak}</span>
@@ -202,13 +202,13 @@ function advRow(p, b) {
   const kd = (b.k / Math.max(1, b.d)).toFixed(2);
   const ult = b.ultMax ? (b.ult >= b.ultMax ? '<b class="ult-ok">大招</b>'
     : `<span class="ultbar"><i style="width:${Math.round(b.ult * 100 / b.ultMax)}%"></i></span><small>${b.ult}/${b.ultMax}</small>`) : '';
-  return `<div class="arow${p.me ? ' me' : ''}${b.alive ? '' : ' dead'}">
+  return `<div data-pu="${esc(p.puuid)}" class="arow clk${p.me ? ' me' : ''}${b.alive ? '' : ' dead'}">
     <span class="c-champ">${agentImg(p, 'champ')}</span>
     <span class="c-name"><span class="nm">${nameHtml(p)}</span>${b.spike ? '<span class="spike" title="帶包">💣</span>' : ''}</span>
     <span class="c-kda"><b>${b.k}</b>/<b class="d">${b.d}</b>/<b>${b.a}</b></span>
     <span class="c-kd ${cls3(+kd, 1.2, 0.8)}">${stat(kd)}</span>
     <span class="c-hsk" title="爆頭擊殺(擊殺紀錄裡標爆頭的)">${b.hsk ? `<b>${b.hsk}</b><small>${b.k ? ` ${Math.round(b.hsk * 100 / b.k)}%` : ''}</small>` : '<span class="dim">0</span>'}</span>
-    <span class="c-money">${b.money == null ? '' : b.money ? `$${num(b.money)}` : '<span class="dim">$0</span>'}</span>
+    <span class="c-money">${b.money ? `$${num(b.money)}` : '<span class="dim">$0</span>'}</span>
     <span class="c-wpn">${esc(b.weapon)}</span>
     <span class="c-ult">${ult}</span>
   </div>`;
@@ -220,7 +220,7 @@ function advTeam(t) {
     || board[x.puuid].d - board[y.puuid].d);
   const missing = t.players.length - rows.length;
   const kills = rows.reduce((s, p) => s + board[p.puuid].k, 0);
-  const head = `<div class="arow lhead"><span></span><span>玩家</span><span>K/D/A</span><span>K/D</span><span>爆頭殺</span><span>${t.mine ? '錢' : ''}</span><span>${t.mine ? '武器' : ''}</span><span>大招</span></div>`;
+  const head = `<div class="arow lhead"><span></span><span>玩家</span><span>K/D/A</span><span>K/D</span><span>爆頭殺</span><span${t.mine ? '' : ' title="敵方的錢只在開局更新，跟遊戲內 TAB 一樣"'}>錢</span><span>${t.mine ? '武器' : ''}</span><span>大招</span></div>`;
   return `<div class="team ${t.mine ? 'ally' : 'enemy'}"><div class="team-h"><span>${t.mine ? '我方' : '敵方'}</span><small>擊殺 ${kills}${missing ? ` · ${missing} 人還沒資料` : ''}</small></div>
     ${head}${rows.map((p) => advRow(p, board[p.puuid])).join('')}</div>`;
 }
@@ -279,7 +279,7 @@ function rankRow(p) {
     : md.w + md.l ? `<span class="wr ${cls3(Math.round(md.w * 100 / (md.w + md.l)), 55, 45)}"><small>${esc(md.q)}</small> 近${md.n} ${md.w}勝${md.l}敗 <b>${Math.round(md.w * 100 / (md.w + md.l))}%</b></span>`
     : `<span class="wr"><small>${esc(md.q)}</small> 近${md.n} KDA <b>${md.kda}</b></span>`;
   const peak = r.peak && r.peak > r.tier ? `<small>峰 ${esc(r.peakName)}</small>` : '';
-  return `<div class="rrow${p.me ? ' me' : ''}">
+  return `<div data-pu="${esc(p.puuid)}" class="rrow clk${p.me ? ' me' : ''}">
     <span class="c-champ">${agentImg(p, 'champ xs')}</span>
     <span class="c-name"><span class="nm">${nameHtml(p)}</span>${p.level ? `<small class="cn">Lv ${p.level}</small>` : ''}</span>
     <span class="c-rank">${rankHtml(r)}${peak}</span>
@@ -331,7 +331,7 @@ function viewEog() {
   const mk = (p) => (p.mk ? [3, 4, 5].map((n, i) => (p.mk[i] ? `<span class="chip mk${n}" title="${n === 5 ? 'ACE' : n + 'K'} ×${p.mk[i]}">${n === 5 ? 'ACE' : n + 'K'}${p.mk[i] > 1 ? `×${p.mk[i]}` : ''}</span>` : '')).join('') : '');
   const clutch = (p) => (p.clutch && p.clutch.length ? p.clutch.map((c) => `<span class="chip cl">${c}</span>`).join('') : '');
   const tags = (p) => `${p.party ? badge(`組隊${p.party}`, 'party') : ''}${p.mvp ? badge('MVP', 'gold') : ''}${p.platform && p.platform !== 'pc' ? badge('主機', '') : ''}${p.afk ? badge(`AFK ${p.afk}`, 'bad') : ''}`;
-  const rows = (t) => t.players.map((p) => `<div class="erow${p.me ? ' me' : ''}">
+  const rows = (t) => t.players.map((p) => `<div data-pu="${esc(p.puuid)}" class="erow clk${p.me ? ' me' : ''}">
       <span class="c-champ">${agentImg(p, 'champ')}</span>
       <span class="c-name">${nameHtml(p)}${tags(p)}<small class="cn">${esc(p.agent)}${p.level ? ` · Lv${p.level}` : ''}</small></span>
       <span class="c-rank">${rankCell(p)}</span>
@@ -371,6 +371,81 @@ function viewEog() {
     <div class="lol-body eog-body"><div class="eb-meta">${meta.map((m) => `<span>${m}</span>`).join('')}</div>${strip}<div class="teams">${blocks}</div></div>`;
 }
 
+// ── 點玩家看詳細：只影響自己的畫面，資料都是 state 裡已經有的 ──
+let detail = '';   // 打開的玩家 puuid
+
+function findPlayer(pu) {
+  for (const src of [state.match, state.eog]) {
+    for (const t of (src && src.teams) || []) {
+      const p = t.players.find((x) => x.puuid === pu);
+      if (p) return { p, mine: t.mine, eog: src === state.eog };
+    }
+  }
+  return null;
+}
+
+function detailModal() {
+  const f = detail && findPlayer(detail);
+  if (!f) return '';
+  const { p } = f;
+  const r = p.rank || {};
+  const tier = r.tier || p.tier;
+  const gs = (state.recents || {})[p.puuid];
+  const cg = (state.comp || {})[p.puuid];
+  const md = (state.modes || {})[p.puuid];
+  const b = state.gep && (state.gep.board || {})[p.puuid];
+  const sec = (title, body) => `<section><h4>${title}</h4>${body}</section>`;
+  const cells = (s) => (s ? `<div class="vd-stats">
+      <span><small>KDA</small><b class="${cls3(+s.kda, 1.3, 0.8)}">${s.kda}</b></span><span><small>ACS</small><b>${s.acs ?? '—'}</b></span>
+      <span><small>ADR</small><b>${s.adr ?? '—'}</b></span><span><small>HS%</small><b>${s.hsp == null ? '—' : `${s.hsp}%`}</b></span>
+      <span><small>首殺</small><b>${s.fb ?? '—'}</b></span><span><small>勝敗</small><b>${s.w}-${s.l}</b></span></div>` : '<span class="dim">沒有資料</span>');
+  const parts = [];
+  if (b) {
+    parts.push(sec('這場(即時)', `<div class="vd-stats"><span><small>K/D/A</small><b>${b.k}/${b.d}/${b.a}</b></span>
+      <span><small>爆頭殺</small><b>${b.hsk}</b></span><span><small>錢</small><b>$${num(b.money)}</b></span>
+      ${b.weapon ? `<span><small>武器</small><b>${esc(b.weapon)}</b></span>` : ''}${b.ultMax ? `<span><small>大招</small><b>${b.ult}/${b.ultMax}</b></span>` : ''}</div>`));
+  }
+  if (f.eog) {
+    const rb = p.rounds > 1;
+    parts.push(sec('這場(賽後)', `<div class="vd-stats"><span><small>K/D/A</small><b>${p.k}/${p.d}/${p.a}</b></span>
+      <span><small>${rb ? 'ACS' : '分數'}</small><b>${num(rb ? Math.round(p.score / p.rounds) : p.score)}</b></span>
+      <span><small>${rb ? 'ADR' : '傷害'}</small><b>${num(rb ? Math.round(p.dmg / p.rounds) : p.dmg)}</b></span>
+      <span><small>HS%</small><b>${p.hs}%</b></span>${p.kast != null ? `<span><small>KAST</small><b>${p.kast}%</b></span>` : ''}
+      ${p.weapon ? `<span><small>最常用</small><b>${esc(p.weapon)}</b></span>` : ''}</div>`));
+  }
+  if (cg !== undefined) parts.push(sec(`競技 本 act <small>${cg && cg.length ? `近 ${cg.length} 場` : ''}</small>`, cells(cg && cg.length ? aggregate(cg) : null)));
+  if (md && md.n) {
+    parts.push(sec(`目前模式 <small>${esc(md.q)} 近 ${md.n} 場</small>`, md.w + md.l
+      ? `<span class="wr">${md.w}勝${md.l}敗 <b>${Math.round(md.w * 100 / (md.w + md.l))}%</b></span>` : `<span class="wr">KDA <b>${md.kda}</b></span>`));
+  }
+  if (gs && gs.length) {
+    const rows = gs.map((g) => {
+      const rb = g.rounds > 1 && g.queue !== '團隊死鬥' && g.queue !== '死鬥';
+      const shots = (g.hs || 0) + (g.bs || 0) + (g.ls || 0);
+      return `<li class="g ${g.w === null ? 'rm' : g.w ? 'w' : 'l'}">${agentImg({ agentId: g.agentId, agent: g.agent }, 'champ xs')}
+        <span class="g-r">${g.w === null ? '—' : g.w ? '勝' : '敗'}</span><span class="g-kda">${g.k}/<b>${g.d}</b>/${g.a}</span>
+        <span>${rb ? `ACS ${Math.round((g.score || 0) / g.rounds)}` : ''}</span><span>${shots ? `HS ${Math.round(g.hs * 100 / shots)}%` : ''}</span>
+        <span class="g-q">${esc(g.agent)} · ${esc(g.queue)}</span><span class="dim">${ago(g.t)}</span></li>`;
+    }).join('');
+    parts.push(sec(`近 ${gs.length} 場`, `<ul class="vd-games">${rows}</ul>`));
+  } else if (gs === undefined) parts.push(sec('近 5 場', '<span class="skel wide"></span>'));
+  return `<div class="vd-back"><div class="vd" role="dialog">
+    <button class="vd-close" title="關閉">✕</button>
+    <div class="vd-head">${agentImg(p)}<div><div class="vd-name">${nameHtml(p)}</div>
+      <div class="dim">${esc(p.agent)}${p.level ? ` · Lv ${p.level}` : ''} · ${f.mine ? '我方' : '敵方'}</div>
+      <div>${r.tier ? rankHtml(r) : tier ? `<span class="rank ${TIER_CLS(tier)}">${tierImg(tier)}<b>${esc(p.tierName || '')}</b></span>` : '<span class="rank unranked">未定級</span>'} ${seasonHtml(r)}</div></div></div>
+    ${parts.join('')}
+  </div></div>`;
+}
+
+function onRootClick(ev) {
+  if (ev.target.closest('.vd-close') || ev.target.classList.contains('vd-back')) { detail = ''; render(); return; }
+  if (ev.target.closest('.vd')) return;
+  const row = ev.target.closest('[data-pu]');
+  if (row && row.dataset.pu) { detail = row.dataset.pu; render(); }
+}
+function onKey(ev) { if (ev.key === 'Escape' && detail) { detail = ''; render(); } }
+
 function render() {
   if (!root || !state) return;
   let view = 'idle', html;
@@ -379,6 +454,8 @@ function render() {
   else if ((ph === 'pregame' || ph === 'coregame') && state.match) { view = 'cs'; html = viewMatch(); }
   else if (ph === 'eog' && state.eog) { view = 'eog'; html = viewEog(); }
   else html = viewIdle();
+  if (view !== 'idle') html += detailModal();
+  else detail = '';
   if (html === lastKey) return;
   lastKey = html;
   root.className = `valo v-${view}`;
@@ -427,6 +504,8 @@ export function startValo(el) {
   root = el;
   root.hidden = false;
   root.addEventListener('error', onImgError, true);
+  root.addEventListener('click', onRootClick);
+  document.addEventListener('keydown', onKey);
   if (!state) showMsg('連線中…');
   else { lastKey = ''; render(); }
   connect();
@@ -440,6 +519,9 @@ export function stopValo() {
   if (sock) sock.close();
   if (root) {
     root.removeEventListener('error', onImgError, true);
+    root.removeEventListener('click', onRootClick);
+    document.removeEventListener('keydown', onKey);
+    detail = '';
     root.classList.remove('valo');
     root.hidden = true;
   }

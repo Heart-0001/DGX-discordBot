@@ -20,6 +20,10 @@
         <div id="bar"><div id="bar-fill"></div></div>
         <div id="times"><span id="t-cur">0:00</span><span id="t-left">-0:00</span></div>
       </div>
+      <div id="controls">
+        <button id="c-play" class="act" title="暫停 / 繼續">⏸</button>
+        <button id="c-skip" class="act" title="跳過這首">⏭</button>
+      </div>
     </section>
     <section id="lyrics-wrap">
       <div id="lyrics"></div>
@@ -31,6 +35,19 @@
     <span id="off-val">0.0s</span>
     <button id="off-plus" title="歌詞快一點">+</button>
   </div>
+  <button id="q-fab" title="播放佇列 / 點歌">☰ 佇列<span id="q-count"></span></button>
+  <aside id="qpanel" hidden>
+    <header><b>播放佇列</b><span id="q-who"></span><button id="q-close" title="關閉">✕</button></header>
+    <form id="q-form" autocomplete="off">
+      <input id="q-input" maxlength="300" placeholder="歌名或 YouTube 網址">
+      <div class="q-btns"><button type="submit" id="q-add" class="act" title="排到最後(播放清單會整串加)">加入</button><button type="button" id="q-next" class="act" title="下一首播">插入</button></div>
+    </form>
+    <div id="q-now"></div>
+    <div id="q-list"></div>
+  </aside>
+  <div id="reacts" aria-hidden="true"></div>
+  <div id="react-bar"></div>
+  <div id="toast"></div>
   <div id="lol" hidden></div>
   <div id="mini" hidden><img id="mini-cover" alt=""><div id="mini-text"><div id="mini-title"></div><div id="mini-line"></div></div></div>
   <script type="module" src="main.js"></script>

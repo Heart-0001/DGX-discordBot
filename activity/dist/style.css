@@ -125,7 +125,77 @@ body:hover #offset, #offset.show { opacity: 1; }
 #offset button:hover { background: rgba(255, 255, 255, .3); }
 #off-val { min-width: 3.4em; text-align: center; font-variant-numeric: tabular-nums; }
 
+/* ── 互動(live.js)：播放控制、佇列面板、表情反應、提示 ── */
+#controls { display: flex; gap: 10px; grid-column: 1 / -1; }   /* 窄畫面 #info 是 grid：控制列自己佔一整列 */
+#controls button, #q-fab, #qpanel button, #react-bar button { border: 0; cursor: pointer; color: #fff; font: inherit; }
+#controls button { width: 40px; height: 40px; border-radius: 50%; background: rgba(255, 255, 255, .14); font-size: 17px; transition: background .2s, transform .15s; }
+#controls button:hover:not(:disabled) { background: rgba(255, 255, 255, .28); }
+#controls button:active:not(:disabled) { transform: scale(.92); }
+button:disabled { opacity: .35; cursor: not-allowed; }
+#q-fab { position: fixed; top: 12px; right: 14px; z-index: 6; padding: 6px 12px; border-radius: 18px; font-size: 13px;
+  background: rgba(0, 0, 0, .4); backdrop-filter: blur(10px); border: 1px solid rgba(255, 255, 255, .14); }
+#q-fab:hover { background: rgba(0, 0, 0, .6); }
+#q-count { margin-left: .2em; color: rgba(255, 255, 255, .7); font-variant-numeric: tabular-nums; }
+#qpanel { position: fixed; top: 0; right: 0; bottom: 0; z-index: 7; width: min(400px, 92vw); display: flex; flex-direction: column; gap: 10px;
+  padding: 14px; background: rgba(14, 14, 18, .88); backdrop-filter: blur(18px); border-left: 1px solid rgba(255, 255, 255, .1);
+  box-shadow: -20px 0 60px rgba(0, 0, 0, .4); }
+#qpanel[hidden] { display: none; }
+#qpanel header { display: flex; align-items: center; gap: 6px; font-size: 15px; }
+#qpanel header b { font-size: 16px; }
+#q-who { color: rgba(255, 255, 255, .5); font-size: 13px; flex: 1; }
+#q-close { width: 28px; height: 28px; border-radius: 50%; background: rgba(255, 255, 255, .1); }
+#q-form { display: flex; flex-direction: column; gap: 6px; }
+#q-input { width: 100%; padding: 9px 12px; border-radius: 10px; border: 1px solid rgba(255, 255, 255, .16); background: rgba(255, 255, 255, .07);
+  color: #fff; font: inherit; font-size: 14px; user-select: text; outline: none; }
+#q-input:focus { border-color: rgba(255, 255, 255, .45); }
+.q-btns { display: flex; gap: 6px; }
+.q-btns button { flex: 1; padding: 7px 0; border-radius: 9px; font-size: 14px; font-weight: 700; background: rgba(255, 255, 255, .14); }
+.q-btns button:hover:not(:disabled) { background: rgba(255, 255, 255, .26); }
+#q-add { background: rgba(80, 160, 255, .35); }
+#q-add:hover:not(:disabled) { background: rgba(80, 160, 255, .55); }
+#q-list { flex: 1; min-height: 0; overflow-y: auto; }
+#qpanel .qh { margin: 8px 0 4px; font-size: 12px; color: rgba(255, 255, 255, .55); letter-spacing: .05em; }
+#qpanel .qh small { margin-left: .6em; color: #8fd0ff; }
+#qpanel .dim { color: rgba(255, 255, 255, .4); }
+#qpanel ul { list-style: none; display: flex; flex-direction: column; gap: 4px; }
+#qpanel li { display: grid; grid-template-columns: 56px minmax(0, 1fr) auto; gap: 8px; align-items: center; padding: 4px; border-radius: 8px; }
+#qpanel li:hover { background: rgba(255, 255, 255, .06); }
+#qpanel li img, #qpanel .nothumb { width: 56px; height: 32px; border-radius: 5px; object-fit: cover; background: rgba(255, 255, 255, .08);
+  display: flex; align-items: center; justify-content: center; color: rgba(255, 255, 255, .4); }
+#qpanel .qt { display: flex; flex-direction: column; min-width: 0; line-height: 1.25; }
+#qpanel .qt span { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#qpanel .qt small { font-size: 11px; color: rgba(255, 255, 255, .5); }
+#qpanel .rm { width: 26px; height: 26px; border-radius: 50%; background: transparent; color: rgba(255, 255, 255, .5); }
+#qpanel .rm:hover:not(:disabled) { background: rgba(255, 90, 90, .3); color: #fff; }
+#qpanel .auto li { opacity: .7; }
+#qpanel .more { display: block; padding: 4px 8px; font-size: 12px; color: rgba(255, 255, 255, .45); }
+#q-now ul li { background: rgba(255, 255, 255, .07); }
+#react-bar { position: fixed; left: 50%; bottom: 10px; z-index: 6; transform: translateX(-50%); display: flex; gap: 2px; padding: 4px 6px;
+  border-radius: 22px; background: rgba(0, 0, 0, .38); backdrop-filter: blur(10px); opacity: .25; transition: opacity .3s; }
+#react-bar:hover, body:hover #react-bar { opacity: 1; }
+#react-bar button { width: 32px; height: 32px; border-radius: 50%; background: transparent; font-size: 18px; transition: transform .15s, background .2s; }
+#react-bar button:hover:not(:disabled) { background: rgba(255, 255, 255, .15); transform: scale(1.15); }
+#react-bar button:active:not(:disabled) { transform: scale(.9); }
+#reacts { position: fixed; inset: 0; z-index: 5; pointer-events: none; overflow: hidden; }
+#reacts .fl { position: absolute; bottom: 40px; display: flex; flex-direction: column; align-items: center; animation: float-up 3s ease-out forwards; }
+#reacts .fl b { font-size: clamp(28px, 5vh, 44px); line-height: 1; filter: drop-shadow(0 4px 10px rgba(0, 0, 0, .4)); }
+#reacts .fl small { margin-top: 2px; padding: 0 6px; border-radius: 8px; font-size: 11px; background: rgba(0, 0, 0, .45); white-space: nowrap; }
+@keyframes float-up {
+  0% { transform: translate(0, 0) scale(.6); opacity: 0; }
+  10% { transform: translate(0, -20px) scale(1.1); opacity: 1; }
+  100% { transform: translate(var(--drift), -70vh) scale(1); opacity: 0; }
+}
+#toast { position: fixed; left: 50%; bottom: 58px; z-index: 8; max-width: min(520px, 86vw); padding: 8px 14px; border-radius: 10px; font-size: 13px;
+  background: rgba(0, 0, 0, .75); backdrop-filter: blur(10px); opacity: 0; transform: translate(-50%, 6px); transition: opacity .25s, transform .25s;
+  pointer-events: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#toast.show { opacity: 1; transform: translate(-50%, 0); }
+#toast.ok { border-left: 3px solid #5fe08a; }
+#toast.bad { border-left: 3px solid #ff7a7a; }
+html.mode-lol #q-fab, html.mode-lol #qpanel, html.mode-lol #controls { display: none; }
+html.pip #q-fab, html.pip #qpanel, html.pip #react-bar, html.pip #controls, html.pip #toast { display: none; }
+
 @media (prefers-reduced-motion: reduce) {
+  #reacts .fl { animation-duration: .01s !important; }
   #bg img { animation: none; }
   #lyrics, .line { transition: none; }
   html.pip .line { animation: none !important; }
@@ -601,6 +671,31 @@ html.pip #lol.valo .lrow .c-rank .rank small { display: none; }
 #lol.valo .score .se { color: #ff7a7a; }
 #lol.valo .lrow .c-season { line-height: 1.2; }
 #lol.valo .lrow .c-season small { opacity: .6; }
+/* 點玩家看詳細(只影響自己的畫面) */
+#lol.valo .clk { cursor: pointer; }
+#lol.valo .lrow.clk:hover, #lol.valo .arow.clk:hover, #lol.valo .rrow.clk:hover, #lol.valo .erow.clk:hover { background: rgba(255, 255, 255, .06); }
+#lol.valo .pcard.clk:hover { border-color: rgba(255, 70, 85, .6); }
+#lol.valo .vd-back { position: fixed; inset: 0; z-index: 9; display: flex; align-items: center; justify-content: center; padding: 16px;
+  background: rgba(0, 0, 0, .55); backdrop-filter: blur(4px); }
+#lol.valo .vd { position: relative; width: min(560px, 100%); max-height: 100%; overflow-y: auto; display: flex; flex-direction: column; gap: 10px;
+  padding: 16px 18px; border-radius: 12px; background: #1a1015; border: 1px solid var(--line); box-shadow: 0 20px 60px rgba(0, 0, 0, .5); }
+#lol.valo .vd-close { position: absolute; top: 10px; right: 10px; width: 28px; height: 28px; border: 0; border-radius: 50%; cursor: pointer;
+  background: rgba(255, 255, 255, .1); color: #fff; }
+#lol.valo .vd-head { display: flex; gap: 12px; align-items: center; padding-right: 30px; }
+#lol.valo .vd-head > div { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+#lol.valo .vd-name { font-size: 1.25em; font-weight: 800; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#lol.valo .vd section { border-top: 1px solid rgba(255, 255, 255, .07); padding-top: 8px; }
+#lol.valo .vd h4 { font-size: .85em; color: #ff8a94; margin-bottom: 6px; letter-spacing: .05em; }
+#lol.valo .vd h4 small { color: var(--mut); font-weight: 400; margin-left: .4em; }
+#lol.valo .vd-stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(5.2em, 1fr)); gap: 6px; }
+#lol.valo .vd-stats span { display: flex; flex-direction: column; align-items: center; padding: 4px; border-radius: 6px; background: rgba(0, 0, 0, .3); }
+#lol.valo .vd-stats b { font-size: 1.15em; font-variant-numeric: tabular-nums; }
+#lol.valo .vd-stats b.good { color: #5fe08a; }
+#lol.valo .vd-stats b.bad { color: #ff7a7a; }
+#lol.valo .vd-games { list-style: none; display: flex; flex-direction: column; gap: 3px; font-size: .9em; }
+#lol.valo .vd-games .g { grid-template-columns: auto 1.6em 5.5em 4.5em 4.2em minmax(0, 1fr) auto; }
+#lol.valo .vd-games .g .g-q, #lol.valo .vd-games .g:hover .g-q { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+html.pip #lol.valo .vd-back { display: none; }
 /* 比賽開始後：進階 TAB(Overwolf GEP) */
 #lol.valo .v-adv { display: flex; flex-direction: column; gap: 8px; overflow: auto; }
 #lol.valo .adv-tab { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(560px, 100%), 1fr)); gap: 8px; }

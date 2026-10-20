@@ -1,6 +1,7 @@
 import { DiscordSDK } from '@discord/embedded-app-sdk';
 import { startLol, stopLol } from './lol.js';
 import { startValo, stopValo } from './valo.js';
+import { login, startLive } from './live.js';
 
 // 機器人量到的位置 = 已送出的音框。實測(2026-10-08)歌詞要比這個位置早 0.25 秒亮才對得上耳朵，
 // 所以預設提前 0.25 秒；使用者可用右下角 ± 再微調(存在 localStorage)。
@@ -229,7 +230,7 @@ function connect(guildId) {
       app.classList.add('idle');
       setImage('');
       lyricsEl.innerHTML = '';
-      showStatus('目前沒有在播放音樂\n用 /play 點一首歌吧');
+      showStatus('目前沒有在播放音樂\n用 /play 或右上角「☰ 佇列」點一首歌吧');
     } else if (m.type === 'track') {
       onTrack(m);
     } else if (m.type === 'lyrics' && track && m.key === track.key) {
@@ -304,6 +305,8 @@ async function main() {
         updatePip();
       });
     } catch (e) { console.warn('layout mode 訂閱失敗，改用尺寸判斷', e); }
+    // 互動(點歌、表情)：登入要使用者按授權，不擋畫面 —— 登入完(或失敗改唯讀)才連互動的 WebSocket
+    login(sdk, cfg.client_id).then(() => startLive(guildId, sdk.channelId));
     // 問機器人這個語音頻道現在是 /lol 還是 /lyrics，之後每 3 秒再問一次(可能中途換指令)
     let first = true;
     const ask = async () => {
@@ -321,7 +324,8 @@ async function main() {
     setInterval(ask, 3000);
     return;
   }
-  // 瀏覽器測試：?mode=lol / ?mode=valo 強制模式
+  // 瀏覽器測試：?mode=lol / ?mode=valo 強制模式；沒有 Discord 登入 → 互動唯讀
+  if (guildId) startLive(guildId, params.get('c') || '');
   setMode(['lol', 'valo'].includes(params.get('mode')) ? params.get('mode') : 'lyrics', guildId);
 }
 

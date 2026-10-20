@@ -138,6 +138,113 @@ class MusicCog(commands.Cog):
             'channel_id': vc.channel.id if vc.channel else None,
         }
 
+    # ── Activity 點歌(cogs/act_live.py)：跟 slash 指令同一套佇列，只是回傳文字不發 embed ──
+    def queue_view(self, guild_id: int, limit: int = 50) -> dict:
+        state = self._states.get(guild_id)
+        guild = self.bot.get_guild(guild_id)
+        vc = guild.voice_client if guild else None
+
+        def item(s: dict) -> dict:
+            return {'title': s.get('title', ''), 'duration': s.get('duration') or 0, 'url': s.get('webpage_url', ''),
+                    'by': s.get('requested_by', '')}
+        if state is None:
+            return {'current': None, 'queue': [], 'total': 0, 'autoplay': None, 'paused': False, 'repeat': 'off',
+                    'channel': vc.channel.id if vc and vc.channel else None}
+        return {
+            'current': item(state.current) if state.current else None,
+            'queue': [item(s) for s in state.queue[:limit]], 'total': len(state.queue),
+            'autoplay': item(state.autoplay_prefetch) if state.autoplay and state.autoplay_prefetch else None,
+            'paused': bool(vc and vc.is_paused()), 'repeat': state.repeat,
+            'channel': vc.channel.id if vc and vc.channel else None,
+        }
+
+    @staticmethod
+    def _voice_of(member: 'discord.Member') -> Optional['discord.VoiceChannel']:
+        return member.voice.channel if member and member.voice else None
+
+    def _check_member(self, guild: 'discord.Guild', member: 'discord.Member') -> Optional[str]:
+        """Activity 操作音樂：要在語音頻道裡；bot 已經在別的頻道就要跟 bot 同一個。回錯誤訊息或 None。"""
+        ch = self._voice_of(member)
+        if ch is None:
+            return '請先加入語音頻道'
+        vc = guild.voice_client
+        if vc and vc.channel and vc.channel != ch:
+            return f'要在 bot 所在的語音頻道({vc.channel.name})才能操作'
+        return None
+
+    async def web_enqueue(self, guild: 'discord.Guild', member: 'discord.Member', query: str, *, next_: bool) -> str:
+        """Activity 的「加入」(排最後，播放清單整串加)/「插入」(下一首，只取第一首)。失敗丟 ValueError(給使用者看的訊息)。"""
+        err = self._check_member(guild, member)
+        if err:
+            raise ValueError(err)
+        query = (query or '').strip()
+        if not query:
+            raise ValueError('請輸入歌名或網址')
+        try:
+            songs = await self.fetch_info(query)
+        except Exception as e:
+            log.error(f'fetch_info 失敗(Activity): {e}')
+            raise ValueError(f'無法取得音樂：{str(e)[:120]}')
+        if not songs:
+            raise ValueError('找不到音樂')
+        if next_:
+            songs = songs[:1]
+        for s in songs:
+            s['requested_by'] = member.display_name
+        vc = guild.voice_client
+        if vc is None:
+            vc = await self._voice_of(member).connect()
+        state = self.get_state(guild.id)
+        if vc.is_playing() or vc.is_paused():
+            if next_:
+                state.queue.insert(0, songs[0])
+                return f'⏩ 插入為下一首：{songs[0]["title"]}'
+            state.queue.extend(songs)
+            return (f'✅ 已加入 {len(songs)} 首' if len(songs) > 1
+                    else f'✅ 已加入隊列(第 {len(state.queue)} 首)：{songs[0]["title"]}')
+        first, rest = songs[0], songs[1:]
+        state.queue.extend(rest)
+        if not first.get('url'):
+            try:
+                await self._ensure_stream_url(first)
+            except Exception as e:
+                raise ValueError(f'無法取得串流：{str(e)[:120]}')
+        self._start_song(guild.id, vc, state, first)
+        return f'🎵 正在播放：{first["title"]}' + (f'(還有 {len(rest)} 首已加入隊列)' if rest else '')
+
+    def web_control(self, guild: 'discord.Guild', member: 'discord.Member', action: str,
+                    index: Optional[int] = None, url: str = '') -> str:
+        """Activity 的暫停 / 繼續 / 跳過 / 移除。remove 用位置 + 網址比對，避免別人剛好動過佇列刪錯首。"""
+        err = self._check_member(guild, member)
+        if err:
+            raise ValueError(err)
+        vc = guild.voice_client
+        state = self.get_state(guild.id)
+        if action == 'pause':
+            if not (vc and vc.is_playing()):
+                raise ValueError('目前沒有在播放')
+            vc.pause()
+            return '⏸️ 已暫停'
+        if action == 'resume':
+            if not (vc and vc.is_paused()):
+                raise ValueError('目前沒有暫停')
+            vc.resume()
+            return '▶️ 繼續播放'
+        if action == 'skip':
+            if not (vc and (vc.is_playing() or vc.is_paused())):
+                raise ValueError('目前沒有在播放')
+            state.autoplay_prefetch = None
+            state.repeat_skip = True
+            vc.stop()
+            return '⏭️ 已跳過'
+        if action == 'remove':
+            q = state.queue
+            if index is None or not 0 <= index < len(q) or (url and q[index].get('webpage_url') != url):
+                raise ValueError('佇列已經變了，請再試一次')
+            s = q.pop(index)
+            return f'🗑️ 已移除：{s["title"]}'
+        raise ValueError('不支援的操作')
+
     @staticmethod
     def _stream_args(query: str) -> list[str]:
         return [

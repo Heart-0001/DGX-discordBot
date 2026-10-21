@@ -118,3 +118,29 @@ def test_render_chart_png():
     png = sp.render_chart(pts, 103, start, start + 16200, TP, last=105)
     assert png and png[:8] == b'\x89PNG\r\n\x1a\n'
     assert sp.render_chart(pts[:1], 103, start, start + 16200, TP) is None
+
+
+def test_parse_history_ref_and_stats():
+    t0 = int(datetime(2026, 10, 13, tzinfo=TP).timestamp())
+    res = {'meta': {'exchangeTimezoneName': 'Asia/Taipei', 'chartPreviousClose': 2480.0,
+                    'fiftyTwoWeekLow': 1000, 'fiftyTwoWeekHigh': 2590},
+           'timestamp': [t0, t0 + 86400, t0 + 172800, t0 + 259200],
+           'indicators': {'quote': [{'close': [2450.0, None, 2405.0, 2420.0], 'high': [2500.0, None, 2440.0, 2430.0],
+                                     'low': [2440.0, None, 2390.0, None], 'volume': [1000, None, 2000, 0]}]}}
+    h = sp.parse_history(res)
+    assert h['ref'] == 2480.0 and len(h['points']) == 3   # 沒收盤價的那根跳過
+    assert h['high'] == 2500.0 and h['low'] == 2390.0 and h['volume'] == 3000
+    assert h['w52'] == (1000, 2590)
+    del res['meta']['chartPreviousClose']
+    assert sp.parse_history(res)['ref'] == 2450.0          # 沒給就用第一根
+    res['indicators']['quote'][0]['close'] = [2450.0, None, None, None]
+    assert sp.parse_history(res) is None
+
+
+def test_render_history_png():
+    t0 = int(datetime(2026, 1, 2, tzinfo=TP).timestamp())
+    pts = [(t0 + i * 86400, 100 + (i % 11)) for i in range(250)]
+    png = sp.render_history(pts, 98, TP, '%Y/%m', last=104)
+    assert png and png[:8] == b'\x89PNG\r\n\x1a\n'
+    assert sp.render_history(pts[:1], 98, TP, '%Y/%m') is None
+    assert set(sp.RANGES) == {'1d', '5d', '1mo', '1y', '5y'}

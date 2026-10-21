@@ -210,6 +210,38 @@ def parse_yahoo(res: dict) -> dict:
     }
 
 
+# 走勢區間按鈕：key → (按鈕字, 說明, Yahoo interval, x 軸日期格式, 快取秒數)。'1d' 是原本的當日畫面
+RANGES = {
+    '1d': ('日', '今日', '2m', '%H:%M', 15),
+    '5d': ('週', '近一週', '15m', '%m/%d', 60),
+    '1mo': ('月', '近一月', '1d', '%m/%d', 300),
+    '1y': ('年', '近一年', '1d', '%Y/%m', 900),
+    '5y': ('5年', '近五年', '1wk', '%Y', 3600),
+}
+
+
+def parse_history(res: dict) -> Optional[dict]:
+    """Yahoo chart API(range≠1d)的 result[0] → 區間走勢與統計。ref = 區間開始前一天的收盤，用來算區間漲跌。"""
+    m = res.get('meta') or {}
+    ts = res.get('timestamp') or []
+    q = ((res.get('indicators') or {}).get('quote') or [{}])[0]
+    rows = [(t, c, h, lo, v) for t, c, h, lo, v in zip(ts, q.get('close') or [], q.get('high') or [],
+                                                       q.get('low') or [], q.get('volume') or [])
+            if c is not None]
+    if len(rows) < 2:
+        return None
+    highs = [h for _, _, h, _, _ in rows if h is not None]
+    lows = [lo for _, _, _, lo, _ in rows if lo is not None]
+    return {
+        'tz': ZoneInfo(m.get('exchangeTimezoneName') or 'America/New_York'),
+        'points': [(t, c) for t, c, _, _, _ in rows],
+        'ref': _num(m.get('chartPreviousClose')) or rows[0][1],
+        'high': max(highs) if highs else None, 'low': min(lows) if lows else None,
+        'volume': sum(int(v) for *_, v in rows if v) or None,
+        'w52': (_num(m.get('fiftyTwoWeekLow')), _num(m.get('fiftyTwoWeekHigh'))),
+    }
+
+
 def change(q: dict, ref: str = 'price') -> tuple[Optional[float], Optional[float]]:
     p, y = q.get(ref), q.get('prev')
     if p is None or not y:
@@ -328,10 +360,30 @@ def trend_color(d: Optional[float]) -> tuple:
 def render_chart(points: list[tuple[int, float]], prev: Optional[float], start: int, end: int,
                  tz: ZoneInfo, last: Optional[float] = None) -> Optional[bytes]:
     """當日走勢(x 軸固定整個交易時段，盤中只畫到現在)；虛線是昨收。回傳 PNG。"""
-    from PIL import Image, ImageDraw, ImageFont
     pts = [(t, p) for t, p in points if start <= t <= end]
     if len(pts) < 2:
         return None
+    span = max(1, end - start)
+    xlabels = [(f, datetime.fromtimestamp(start + int(span * f), tz).strftime('%H:%M'), a)
+               for f, a in ((0, 'lt'), (0.5, 'mt'), (1, 'rt'))]
+    return _plot([((t - start) / span, p) for t, p in pts], prev, last, xlabels)
+
+
+def render_history(points: list[tuple[int, float]], ref: Optional[float], tz: ZoneInfo, date_fmt: str,
+                   last: Optional[float] = None) -> Optional[bytes]:
+    """週/月/年走勢：x 軸照資料點排(跳過休市和夜間空檔)；虛線是區間起點前一天的收盤。"""
+    if len(points) < 2:
+        return None
+    n = len(points) - 1
+    xlabels = [(i / n, datetime.fromtimestamp(points[i][0], tz).strftime(date_fmt), a)
+               for i, a in ((0, 'lt'), (n // 2, 'mt'), (n, 'rt'))]
+    return _plot([(i / n, p) for i, (_, p) in enumerate(points)], ref, last, xlabels)
+
+
+def _plot(pts: list[tuple[float, float]], prev: Optional[float], last: Optional[float],
+          xlabels: list[tuple[float, str, str]]) -> bytes:
+    """pts 的 x 是 0~1 的比例；prev 畫成虛線基準，顏色看 last(沒給用最後一點)比 prev 漲還跌。"""
+    from PIL import Image, ImageDraw, ImageFont
     W, H, R, T, B = 720, 260, 12, 16, 28
     S = 2   # 先畫 2 倍再縮，線條比較平滑
     try:
@@ -346,7 +398,7 @@ def render_chart(points: list[tuple[int, float]], prev: Optional[float], start: 
     L = max(font.getlength(fmt_price(v)) for v in labels) / S + 14   # 左邊留給價格標籤
     img = Image.new('RGB', (W * S, H * S), (43, 45, 49))
     dr = ImageDraw.Draw(img, 'RGBA')
-    X = lambda t: (L + (t - start) / max(1, end - start) * (W - L - R)) * S
+    X = lambda f: (L + f * (W - L - R)) * S
     Y = lambda p: (T + (hi - p) / (hi - lo) * (H - T - B)) * S
     col = trend_color((last if last is not None else pts[-1][1]) - prev if prev else None)
     xy = [(X(t), Y(p)) for t, p in pts]
@@ -364,9 +416,8 @@ def render_chart(points: list[tuple[int, float]], prev: Optional[float], start: 
         if all(abs(y - d) > 14 * S for d in drawn):
             dr.text((L * S - 6 * S, y), fmt_price(p), fill=(200, 200, 200), font=font, anchor='rm')
             drawn.append(y)
-    for t, anchor in ((start, 'lt'), ((start + end) // 2, 'mt'), (end, 'rt')):
-        dr.text((X(t), (H - B + 8) * S), datetime.fromtimestamp(t, tz).strftime('%H:%M'),
-                fill=(170, 170, 170), font=font, anchor=anchor)
+    for f, text, anchor in xlabels:
+        dr.text((X(f), (H - B + 8) * S), text, fill=(170, 170, 170), font=font, anchor=anchor)
     img = img.resize((W, H), Image.LANCZOS)
     buf = io.BytesIO()
     img.save(buf, 'PNG', optimize=True)

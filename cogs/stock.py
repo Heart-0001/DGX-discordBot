@@ -146,6 +146,12 @@ class StockCog(commands.Cog):
         res = ((d or {}).get('chart') or {}).get('result') or []
         return sp.parse_yahoo(res[0]) if res and (res[0].get('meta') or {}).get('regularMarketPrice') else None
 
+    async def yahoo_history(self, symbol: str, rng: str) -> Optional[dict]:
+        _, _, interval, _, ttl = sp.RANGES[rng]
+        d = await self._yahoo(f'/v8/finance/chart/{quote(symbol, safe="^=")}?range={rng}&interval={interval}', ttl)
+        res = ((d or {}).get('chart') or {}).get('result') or []
+        return sp.parse_history(res[0]) if res else None
+
     async def yahoo_search(self, q: str) -> Optional[str]:
         d = await self._yahoo(f'/v1/finance/search?q={quote(q)}&quotesCount=8&newsCount=0', 600)
         return sp.pick_search((d or {}).get('quotes'))
@@ -260,6 +266,51 @@ class StockCog(commands.Cog):
         emb.set_footer(text=f"{mk['label']} · {src}" + (f" · {at.strftime('%m/%d %H:%M')} {tzname}" if at else ''))
         return emb
 
+    def _range_embed(self, t: dict, q: dict, h: dict, rng: str) -> discord.Embed:
+        """週/月/年畫面：漲跌是現價比區間開始前一天的收盤。"""
+        mk = sp.MARKETS[t['market']]
+        label = sp.RANGES[rng][1]
+        d = q['price'] - h['ref']
+        cur = '' if t['market'] == 'TW' or q.get('currency') in (None, 'USD') else f" {q['currency']}"
+        emb = discord.Embed(title=self._title(t, q),
+                            description=f"**{sp.fmt_price(q['price'])}**{cur}　{label} {sp.fmt_change(d, d / h['ref'] * 100)}",
+                            color=discord.Color.from_rgb(*sp.trend_color(d)))
+        emb.add_field(name='區間最高', value=sp.fmt_price(h['high']))
+        emb.add_field(name='區間最低', value=sp.fmt_price(h['low']))
+        emb.add_field(name='區間起點', value=sp.fmt_price(h['ref']))
+        if h['volume'] and not t.get('index'):   # Yahoo 台股的量是股，換成張跟證交所一致
+            vol, unit = (h['volume'] // 1000, '張') if t['market'] == 'TW' else (h['volume'], '股')
+            emb.add_field(name='區間成交量', value=sp.fmt_volume(vol, unit))
+        w52 = h.get('w52') or (None, None)
+        if rng != '1y' and w52[0] and w52[1]:
+            emb.add_field(name='52 週區間', value=f'{sp.fmt_price(w52[0])} – {sp.fmt_price(w52[1])}')
+        a, b = (datetime.fromtimestamp(h['points'][i][0], h['tz']).strftime('%Y/%m/%d') for i in (0, -1))
+        emb.set_footer(text=f"{mk['label']} · Yahoo Finance · {a} – {b}")
+        return emb
+
+    async def render(self, t: dict, others: list[dict], rng: str) -> tuple[Optional[discord.Embed], Optional[discord.File]]:
+        """/stock 的畫面(embed, 走勢圖)；拿不到報價/走勢回傳 (None, None)。"""
+        if rng == '1d':
+            q, c = await self.quote(t)
+        else:
+            q, _ = await self.quote(t, chart=False)
+        if not q or q.get('price') is None:
+            return None, None
+        if rng == '1d':
+            emb, f = self._embed(t, q, c), self._chart_file(t, q, c)
+        else:
+            h = await self.yahoo_history(sp.yahoo_symbol(t), rng)
+            if not h:
+                return None, None
+            emb = self._range_embed(t, q, h, rng)
+            png = sp.render_history(h['points'], h['ref'], h['tz'], sp.RANGES[rng][3], last=q['price'])
+            f = discord.File(io.BytesIO(png), filename='chart.png') if png else None
+        if f:
+            emb.set_image(url='attachment://chart.png')
+        if others:
+            emb.add_field(name='也符合', value='、'.join(f"{o['name']} {o['code']}" for o in others[:5]), inline=False)
+        return emb, f
+
     # ── 指令 ──
     @app_commands.command(name='stock', description='查股價：台股代號/名稱或美股代號都可以，例如 6669、緯穎、VTI、蘋果、大盤')
     @app_commands.describe(symbol='代號或名稱，例如 2330、台積電、0050、AAPL、apple、費半')
@@ -269,17 +320,12 @@ class StockCog(commands.Cog):
         if not t:
             await interaction.followup.send(f'❌ 找不到「{_esc(symbol)}」：台股請用代號或中文名，美股請用代號或英文名')
             return
-        q, c = await self.quote(t)
-        if not q or q.get('price') is None:
-            await interaction.followup.send(f'❌ 暫時拿不到 **{_esc(self._title(t, q or {}))}** 的報價，稍後再試')
+        emb, f = await self.render(t, others, '1d')
+        if not emb:
+            await interaction.followup.send(f'❌ 暫時拿不到 **{_esc(self._title(t, {}))}** 的報價，稍後再試')
             return
-        emb = self._embed(t, q, c)
-        f = self._chart_file(t, q, c)
-        if f:
-            emb.set_image(url='attachment://chart.png')
-        if others:
-            emb.add_field(name='也符合', value='、'.join(f"{o['name']} {o['code']}" for o in others[:5]), inline=False)
-        await interaction.followup.send(embed=emb, **({'file': f} if f else {}))
+        view = RangeView(self, t, others)
+        view.message = await interaction.followup.send(embed=emb, view=view, wait=True, **({'file': f} if f else {}))
 
     @stock.autocomplete('symbol')
     async def _ac_symbol(self, interaction: discord.Interaction, current: str):
@@ -486,6 +532,48 @@ class StockCog(commands.Cog):
         if ok:
             log.info(f'📈 {self._label(e)} {ev} 通知已發')
         return ok
+
+
+class RangeView(discord.ui.View):
+    """/stock 下面的 日/週/月/年/5年 按鈕：點了就把同一則訊息換成那個區間(大家共用一則，誰都能點)。"""
+
+    def __init__(self, cog: StockCog, t: dict, others: list[dict]):
+        super().__init__(timeout=1800)
+        self.cog, self.t, self.others = cog, t, others
+        self.rng = '1d'
+        self.message: Optional[discord.Message] = None
+        self._lock = asyncio.Lock()
+        for key, (label, *_) in sp.RANGES.items():
+            b = discord.ui.Button(label=label)
+            b.callback = self._make_cb(key)
+            self.add_item(b)
+        self._restyle()
+
+    def _restyle(self):
+        for b, key in zip(self.children, sp.RANGES):
+            b.style = discord.ButtonStyle.primary if key == self.rng else discord.ButtonStyle.secondary
+
+    def _make_cb(self, rng: str):
+        async def cb(interaction: discord.Interaction):
+            await interaction.response.defer()
+            async with self._lock:   # 連點時照順序換，免得慢的那次蓋掉後點的
+                emb, f = await self.cog.render(self.t, self.others, rng)
+                if not emb:
+                    await interaction.followup.send(f'❌ 暫時拿不到{sp.RANGES[rng][1]}的走勢，稍後再試', ephemeral=True)
+                    return
+                self.rng = rng
+                self._restyle()
+                await interaction.edit_original_response(embed=emb, attachments=[f] if f else [], view=self)
+        return cb
+
+    async def on_timeout(self):
+        # 用 bot 身分改(interaction 的 token 15 分鐘就過期)；拿掉按鈕，免得點了沒反應
+        if not self.message:
+            return
+        try:
+            await self.message.channel.get_partial_message(self.message.id).edit(view=None)
+        except (discord.HTTPException, AttributeError):
+            pass
 
 
 async def _none():

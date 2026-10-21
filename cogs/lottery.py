@@ -42,6 +42,10 @@ class LotteryCog(commands.Cog):
         self.bot = bot
         self.rng = random.Random()
         self.data = self._load()
+        now = datetime.now(TW)
+        # 從每週改成每天：已經排好的週日開獎提前到下一個 21:00(list 先跑完再判斷，每個伺服器都要改到)
+        if any([pull_in_draw(st, now) for st in self.data['guilds'].values()]):
+            self.save()
         self._task: Optional[asyncio.Task] = None
 
     async def cog_load(self):
@@ -61,9 +65,6 @@ class LotteryCog(commands.Cog):
         except (OSError, ValueError):
             d = {}
         d.setdefault('guilds', {})
-        now = datetime.now(TW)
-        for st in d['guilds'].values():   # 從每週改成每天：已經排好的週日開獎提前到下一個 21:00
-            pull_in_draw(st, now)
         return d
 
     def save(self):

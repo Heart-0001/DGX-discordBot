@@ -367,7 +367,7 @@ function viewEog() {
   }
   const meta = [mmss(e.length), e.start ? ago(e.start * 1000) : '', e.server ? `伺服器 ${esc(e.server)}` : '', e.version ? `v${esc(e.version)}` : '',
     e.ranked ? '積分' : '', e.early ? '提前結束' : '', byId[e.matchMvp] ? `全場 MVP ${esc(byId[e.matchMvp].agent)}` : ''].filter(Boolean);
-  return `${header(`<span class="lt-title eb-title">${res}</span>`, score ? `<span class="score">${score}</span>` : '')}
+  return `${header(`<span class="lt-title eb-title">${res}</span>`, `${score ? `<span class="score">${score}</span>` : ''}<button class="fun-go" type="button">🎟️ 去玩活動</button>`)}
     <div class="lol-body eog-body"><div class="eb-meta">${meta.map((m) => `<span>${m}</span>`).join('')}</div>${strip}<div class="teams">${blocks}</div></div>`;
 }
 

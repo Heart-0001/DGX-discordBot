@@ -2,6 +2,7 @@ import { DiscordSDK } from '@discord/embedded-app-sdk';
 import { startLol, stopLol } from './lol.js';
 import { startValo, stopValo } from './valo.js';
 import { login, startLive } from './live.js';
+import { initFun } from './fun.js';
 
 // 機器人量到的位置 = 已送出的音框。實測(2026-10-08)歌詞要比這個位置早 0.25 秒亮才對得上耳朵，
 // 所以預設提前 0.25 秒；使用者可用右下角 ± 再微調(存在 localStorage)。
@@ -293,6 +294,7 @@ async function main() {
   const params = new URLSearchParams(location.search);
   let guildId = params.get('g') || params.get('guild_id');
   updatePip();
+  initFun();
   if (params.has('frame_id')) {
     // 在 Discord 裡：完成 SDK 握手，guild 從 SDK 拿
     const cfg = await fetch('api/config').then((r) => r.json());

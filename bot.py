@@ -27,7 +27,8 @@ intents.voice_states = True
 
 bot = commands.Bot(command_prefix='!', intents=intents)
 EXTENSIONS = ('cogs.music', 'cogs.lyrics', 'cogs.act_live', 'cogs.lol', 'cogs.valo', 'cogs.bigtwo', 'cogs.uno', 'cogs.health',
-              'cogs.stock')
+              'cogs.stock', 'cogs.fun', 'cogs.gacha', 'cogs.fishing', 'cogs.lottery', 'cogs.minigames',
+              'cogs.mono', 'cogs.fun_web')
 
 # Activity 只有一個(同一個 App)：記住每個語音頻道最後用 /lyrics 還是 /lol 開的，前端照這個切畫面
 # 存檔：bot 重啟後開著的 Activity 每 3 秒還會來問，不能全部退回歌詞

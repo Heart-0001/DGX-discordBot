@@ -1,6 +1,8 @@
 // 互動：Discord 登入、點歌控制(佇列面板 + 歌詞畫面的 ⏸ ⏭)、表情反應飄字。後端 cogs/act_live.py。
 // 沒登入(或機器人沒設 client secret)也看得到佇列，只是按鈕停用。
 
+import { mockFun } from './fun_mock.js';
+
 const $ = (id) => document.getElementById(id);
 const EMOJIS = ['👍', '😂', '🔥', '😭', '❤️', '🎉', '👏', '💀', '🤯', '😎'];
 const MAX_FLOAT = 40;          // 同時飄在畫面上的表情上限
@@ -10,6 +12,35 @@ const VOL_GAP = 150;           // ms：拖音量條時送出的最短間隔
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const fmt = (s) => { s = Math.max(0, Math.floor(s || 0)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
 const ytId = (u) => ((u || '').match(/(?:v=|youtu\.be\/)([\w-]{11})/) || [])[1] || '';
+
+// ── 活動面板(fun.js)用的請求/推播 ──
+const MOCK = new URLSearchParams(location.search).has('mock');   // ?mock=1：不連 WebSocket，用 fun_mock.js 的假後端
+const funHandlers = { push: null, celebrate: null, auth: null };
+const funPending = new Map();   // id → {resolve, reject, timer}
+let funSeq = 0;
+export const isMock = MOCK;
+export const getMe = () => (MOCK ? '測試員' : me);
+export function onFun(h) { Object.assign(funHandlers, h); }
+
+// 送一個活動 op，回傳 data；失敗 / 逾時 reject(Error)
+export function sendFun(op, args = {}) {
+  if (MOCK) return mockFun(op, args);
+  if (!ws || ws.readyState !== WebSocket.OPEN) return Promise.reject(new Error('還沒連上伺服器，稍後再試'));
+  const id = ++funSeq;
+  const ms = op === 'link_add' ? 30000 : 20000;
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => { funPending.delete(id); reject(new Error('伺服器沒有回應，請再試一次')); }, ms);
+    funPending.set(id, { resolve, reject, timer });
+    ws.send(JSON.stringify({ ...args, type: 'fun', id, op }));
+  });
+}
+function funReply(m) {
+  const p = funPending.get(m.id);
+  if (!p) return;
+  funPending.delete(m.id);
+  clearTimeout(p.timer);
+  if (m.ok) p.resolve(m.data); else p.reject(new Error(m.error || '失敗了'));
+}
 
 let ws = null;
 let sid = '';
@@ -57,12 +88,19 @@ function connect() {
   sock.onmessage = (ev) => {
     let m;
     try { m = JSON.parse(ev.data); } catch { return; }
-    if (m.type === 'me') { me = m.user; canAuth = m.canAuth; updateLock(); }
+    if (m.type === 'me') { me = m.user; canAuth = m.canAuth; updateLock(); if (funHandlers.auth) funHandlers.auth(); }
+    else if (m.type === 'fun') funReply(m);
+    else if (m.type === 'fun-push') { if (funHandlers.push) funHandlers.push(m.what, m.data); }
+    else if (m.type === 'celebrate') { if (funHandlers.celebrate) funHandlers.celebrate(m); }
     else if (m.type === 'queue') { queue = m; renderQueue(); }
     else if (m.type === 'react') floatEmoji(m.emoji, m.name);
     else if (m.type === 'toast') toast(m.text, m.ok);
   };
-  sock.onclose = () => { if (ws === sock) setTimeout(connect, 2000); };
+  sock.onclose = () => {
+    if (ws !== sock) return;
+    for (const [id, p] of funPending) { clearTimeout(p.timer); p.reject(new Error('連線中斷，請再試一次')); funPending.delete(id); }
+    setTimeout(connect, 2000);
+  };
 }
 
 // 沒登入：按鈕停用，滑過去說明原因

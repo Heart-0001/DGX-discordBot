@@ -351,7 +351,7 @@ function viewEog() {
   return `<div class="eog-banner ${E.win ? 'win' : 'loss'}">
       <div class="eb-title">${E.win ? '勝利' : '失敗'}</div>
       <div class="eb-meta"><span>${esc(qn)}</span><span>遊戲時間 ${mmss(E.length)}</span></div>
-      <div class="eb-right">${stale}</div>
+      <div class="eb-right">${stale}<button class="fun-go" type="button">🎟️ 去玩活動</button></div>
     </div>
     <div class="lol-body eog-body">${teams}</div>`;
 }

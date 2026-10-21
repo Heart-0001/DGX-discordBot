@@ -10,6 +10,7 @@ WebSocket api/live?g=伺服器&c=頻道&sid=
        {type:'react', emoji, name}(同頻道全部人)；{type:'toast', text, ok}
   上行 {type:'react', emoji}；{type:'music', action:'pause'|'resume'|'skip'|'remove'|'volume', index, url, level, quiet}；
        {type:'add', query, next}
+       {type:'fun', id, op, ...}：活動面板，轉給 cogs/fun_web.py(回覆和推播格式見那邊)
 權限：在場的人都能按表情；音樂操作要在語音頻道裡(bot 已在別的頻道就要同一個)，規則在 MusicCog._check_member。
 """
 import asyncio
@@ -44,6 +45,7 @@ class ActLiveCog(commands.Cog):
         self._http: Optional[aiohttp.ClientSession] = None
         self._sessions: dict[str, dict] = {}            # sid → {id, name, at}
         self._socks: dict[int, set] = {}                # 頻道 → 開著的 WebSocket(廣播表情 / 操作結果)
+        self._meta: dict = {}                           # WebSocket → (伺服器, 登入的 uid|None)：活動推播用
         self._adding: set[int] = set()                  # 正在點歌(搜尋中)的人，一次一首
 
     async def cog_load(self):
@@ -124,6 +126,7 @@ class ActLiveCog(commands.Cog):
             return ws
         sess = self._sessions.get(request.query.get('sid') or '')
         self._socks.setdefault(cid, set()).add(ws)
+        self._meta[ws] = (gid, sess['id'] if sess else None)
         pusher = asyncio.ensure_future(self._push_queue(ws, gid))
         last_react = 0.0
         try:
@@ -136,6 +139,13 @@ class ActLiveCog(commands.Cog):
                 except ValueError:
                     continue
                 if not isinstance(m, dict):
+                    continue
+                if m.get('type') == 'fun':           # 活動面板(cogs/fun_web.py 自己處理沒登入的情況)
+                    web_ = self.bot.get_cog('FunWebCog')
+                    if web_:
+                        asyncio.ensure_future(web_.op(ws, gid, sess, m))
+                    else:
+                        await ws.send_json({'type': 'fun', 'id': m.get('id'), 'ok': False, 'error': '活動模組沒有載入'})
                     continue
                 if not sess:
                     await self._toast(ws, '要先授權登入才能操作' if self.secret else '機器人還沒設定登入(client secret)', False)
@@ -165,7 +175,25 @@ class ActLiveCog(commands.Cog):
         finally:
             pusher.cancel()
             self._socks.get(cid, set()).discard(ws)
+            self._meta.pop(ws, None)
         return ws
+
+    # ── 活動推播(cogs/fun_web.py 用) ──
+    async def send_user(self, uid: int, msg: dict):
+        """推給這個人開著的所有 Activity。"""
+        await self._send_where(lambda g, u: u == uid, msg)
+
+    async def send_guild(self, gid: int, msg: dict):
+        """推給這個伺服器所有開著的 Activity(慶祝特效)。"""
+        await self._send_where(lambda g, u: g == gid, msg)
+
+    async def _send_where(self, pred, msg: dict):
+        for w, (g, u) in list(self._meta.items()):
+            if pred(g, u) and not w.closed:
+                try:
+                    await w.send_json(msg)
+                except (ConnectionResetError, RuntimeError):
+                    pass
 
     async def _push_queue(self, ws: web.WebSocketResponse, gid: int):
         music = self.bot.get_cog('MusicCog')

@@ -88,6 +88,7 @@ class LyricsCog(commands.Cog):
         app.router.add_post('/api/token', self._h_act)
         app.router.add_get('/api/live', self._h_act)
         app.router.add_get('/api/ytthumb/{tail}', self._h_act)
+        app.router.add_get('/api/fun/{tail:.*}', self._h_fun)
         app.router.add_get('/lol/{tail:.*}', self._h_lol)
         app.router.add_get('/valo/{tail:.*}', self._h_valo)
         app.router.add_get('/', self._h_index)
@@ -280,7 +281,7 @@ class LyricsCog(commands.Cog):
     @staticmethod
     async def _no_cache(request, response):
         """Cloudflare 預設會把 .js/.css 快取 4 小時，改版後看不到；封面除外(有自己的 max-age)。"""
-        if not request.path.startswith(('/api/thumb', '/api/ytthumb/', '/lol/img/', '/valo/img/')):
+        if not request.path.startswith(('/api/thumb', '/api/ytthumb/', '/lol/img/', '/valo/img/', '/api/fun/')):
             response.headers['Cache-Control'] = 'no-cache'
 
     async def _h_index(self, request):
@@ -341,6 +342,13 @@ class LyricsCog(commands.Cog):
         if not act:
             raise web.HTTPServiceUnavailable(text='互動模組未載入')
         return await act.handle(request)
+
+    async def _h_fun(self, request):
+        """活動面板的圖片(轉蛋圖示、頭像、大富翁棋盤)：交給 cogs/fun_web.py。"""
+        web_ = self.bot.get_cog('FunWebCog')
+        if not web_:
+            raise web.HTTPServiceUnavailable(text='活動模組未載入')
+        return await web_.handle(request, request.match_info['tail'])
 
     def _snapshot(self, guild_id: int) -> Optional[dict]:
         music = self.bot.get_cog('MusicCog')

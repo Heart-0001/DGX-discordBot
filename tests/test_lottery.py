@@ -3,44 +3,50 @@ from datetime import datetime
 
 from games.fun_score import TW
 from games.lottery_logic import (BET_POOL, draw, new_state, next_draw_after, pick_winners, prize_amounts,
-                                 settle_period)
+                                 pull_in_draw, settle_period)
 
 
 def tw(y, m, d, h=0, mi=0, s=0):
     return datetime(y, m, d, h, mi, s, tzinfo=TW)
 
 
-# ── 開獎時間(2026-10-18 是週日)──
-def test_next_draw_each_weekday():
-    # 2026-10-19(一) … 10-24(六) → 同一週的 10-25(日)
-    for d in range(19, 25):
-        assert next_draw_after(tw(2026, 10, d, 12)) == tw(2026, 10, 25, 21)
+# ── 開獎時間(每天 21:00)──
+def test_next_draw_every_day():
+    for d in range(19, 26):
+        assert next_draw_after(tw(2026, 10, d, 12)) == tw(2026, 10, d, 21)
     assert next_draw_after(tw(2026, 10, 25, 0, 0)) == tw(2026, 10, 25, 21)
 
 
 def test_next_draw_around_21():
     assert next_draw_after(tw(2026, 10, 25, 20, 59, 59)) == tw(2026, 10, 25, 21)
-    # 剛好 21:00 整算已過 → 下週
-    assert next_draw_after(tw(2026, 10, 25, 21, 0, 0)) == tw(2026, 11, 1, 21)
-    assert next_draw_after(tw(2026, 10, 25, 21, 0, 1)) == tw(2026, 11, 1, 21)
-    assert next_draw_after(tw(2026, 10, 25, 23, 59, 59)) == tw(2026, 11, 1, 21)
+    # 剛好 21:00 整算已過 → 明天
+    assert next_draw_after(tw(2026, 10, 25, 21, 0, 0)) == tw(2026, 10, 26, 21)
+    assert next_draw_after(tw(2026, 10, 25, 21, 0, 1)) == tw(2026, 10, 26, 21)
+    assert next_draw_after(tw(2026, 10, 25, 23, 59, 59)) == tw(2026, 10, 26, 21)
 
 
 def test_next_draw_across_year_and_month():
-    # 2026-12-27 是週日
-    assert next_draw_after(tw(2026, 12, 27, 21, 0, 1)) == tw(2027, 1, 3, 21)
-    assert next_draw_after(tw(2026, 12, 31, 23, 59)) == tw(2027, 1, 3, 21)
-    assert next_draw_after(tw(2027, 1, 1, 0, 0)) == tw(2027, 1, 3, 21)
-    assert next_draw_after(tw(2027, 12, 31, 12)) == tw(2028, 1, 2, 21)   # 2028-01-02 週日
-    assert next_draw_after(tw(2028, 2, 28, 22)) == tw(2028, 3, 5, 21)    # 閏年
+    assert next_draw_after(tw(2026, 10, 31, 22)) == tw(2026, 11, 1, 21)
+    assert next_draw_after(tw(2026, 12, 31, 23, 59)) == tw(2027, 1, 1, 21)
+    assert next_draw_after(tw(2028, 2, 28, 22)) == tw(2028, 2, 29, 21)    # 閏年
 
 
 def test_next_draw_other_timezone_input():
     from datetime import timezone
     utc = datetime(2026, 10, 25, 13, 0, 0, tzinfo=timezone.utc)          # = 台灣 21:00 整
-    assert next_draw_after(utc) == tw(2026, 11, 1, 21)
+    assert next_draw_after(utc) == tw(2026, 10, 26, 21)
     utc = datetime(2026, 10, 25, 12, 59, 59, tzinfo=timezone.utc)
     assert next_draw_after(utc) == tw(2026, 10, 25, 21)
+
+
+def test_old_weekly_draw_pulled_in_to_next_21():
+    st = new_state(tw(2026, 10, 21, 12))
+    st['next_draw'] = int(tw(2026, 10, 25, 21).timestamp())             # 舊版排的週日
+    st['bets'], st['pot'] = {'a': 1}, BET_POOL
+    assert pull_in_draw(st, tw(2026, 10, 21, 23, 10))
+    assert st['next_draw'] == int(tw(2026, 10, 22, 21).timestamp())
+    assert st['bets'] == {'a': 1} and st['pot'] == BET_POOL             # 已經買的注留著
+    assert not pull_in_draw(st, tw(2026, 10, 21, 23, 20))               # 已經是下一個 21:00 → 不動
 
 
 # ── 抽獎 ──
@@ -107,7 +113,7 @@ def test_zero_bets_rolls_everything():
 
 # ── 整期結算 / 重啟不重複開獎 ──
 def test_settle_period_flow_and_idempotent():
-    now0 = tw(2026, 10, 21, 12)
+    now0 = tw(2026, 10, 25, 12)
     st = new_state(now0)
     assert st['next_draw'] == int(tw(2026, 10, 25, 21).timestamp())
     st['bets'] = {'a': 3, 'b': 2}
@@ -117,7 +123,7 @@ def test_settle_period_flow_and_idempotent():
     assert not settle_period(st, tw(2026, 10, 25, 20, 59, 59), rng)
     assert st['bets'] and st['last'] is None
     assert settle_period(st, tw(2026, 10, 25, 21, 0, 0), rng)
-    assert st['next_draw'] == int(tw(2026, 11, 1, 21).timestamp())
+    assert st['next_draw'] == int(tw(2026, 10, 26, 21).timestamp())
     assert st['bets'] == {} and st['prize'] == '' and st['period'] == 2
     assert st['last']['prize'] == '頭獎送身分組'
     assert len(st['pay']) == 2 and st['announce'] is True
@@ -133,7 +139,7 @@ def test_settle_after_long_downtime_draws_once():
     st['bets'] = {'a': 1}
     st['pot'] = 100
     rng = random.Random(1)
-    now = tw(2026, 12, 25, 12)                       # 停機好幾週
+    now = tw(2026, 12, 25, 12)                       # 停機好幾天
     assert settle_period(st, now, rng)
     assert not settle_period(st, now, rng)
     assert st['next_draw'] > now.timestamp()

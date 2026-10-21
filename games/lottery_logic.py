@@ -2,7 +2,7 @@
 
 規則：
 - 每張券 = 1 注；每注讓彩金 +BET_POOL 代幣(系統出錢)。
-- 每週日 21:00(台灣時間)開獎。
+- 每天 21:00(台灣時間)開獎。
 - 抽頭獎時每一注機率完全相同(買越多注，機率越高，但每注一樣)；
   頭獎得主的其他注會被移除後再抽二獎，依此抽三獎，所以同一人不會中兩個獎。
 - 彩金 60% / 25% / 15%(各自無條件捨去)；人數不足 3 人時，沒分出去的彩金(含捨去的零頭)滾到下期。
@@ -14,18 +14,16 @@ from games.fun_score import TW
 
 BET_POOL = 100                  # 每注讓彩金增加的代幣
 SHARES = (60, 25, 15)           # 頭獎 / 二獎 / 三獎 百分比
-DRAW_WEEKDAY = 6                # 週日(Monday=0)
 DRAW_HOUR = 21
 RANK_NAME = ('頭獎', '二獎', '三獎')
 
 
 def next_draw_after(now: datetime) -> datetime:
-    """嚴格晚於 now 的下一個「週日 21:00 台灣時間」；剛好 21:00 整算已經過了，回傳下週。"""
+    """嚴格晚於 now 的下一個「21:00 台灣時間」；剛好 21:00 整算已經過了，回傳明天。"""
     now = now.astimezone(TW)
-    days = (DRAW_WEEKDAY - now.weekday()) % 7
-    cand = (now + timedelta(days=days)).replace(hour=DRAW_HOUR, minute=0, second=0, microsecond=0)
+    cand = now.replace(hour=DRAW_HOUR, minute=0, second=0, microsecond=0)
     if cand <= now:
-        cand += timedelta(days=7)
+        cand += timedelta(days=1)
     return cand
 
 
@@ -74,6 +72,15 @@ def first_prize_chance(mine: int, total: int) -> float:
 def new_state(now: datetime) -> dict:
     return {'pot': 0, 'bets': {}, 'next_draw': int(next_draw_after(now).timestamp()), 'prize': '',
             'period': 1, 'last': None, 'pay': [], 'announce': False}
+
+
+def pull_in_draw(st: dict, now: datetime) -> bool:
+    """舊存檔(每週開獎時排的)開獎時間比下一個 21:00 還晚 → 提前到下一個 21:00；有改回 True。"""
+    nxt = int(next_draw_after(now).timestamp())
+    if st['next_draw'] > nxt:
+        st['next_draw'] = nxt
+        return True
+    return False
 
 
 def is_due(st: dict, now: datetime) -> bool:

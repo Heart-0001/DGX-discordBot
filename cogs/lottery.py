@@ -1,4 +1,4 @@
-"""樂透：每個伺服器各一期，每週日 21:00(台灣時間)開獎。
+"""樂透：每個伺服器各一期，每天 21:00(台灣時間)開獎。
 
 玩家沒有指令：Activity 的活動面板透過 cogs/fun_web.py 呼叫 info / buy。
 管理員：/lottery prize 設定本期額外獎品說明(預設只有管理伺服器的人看得到)。
@@ -19,7 +19,8 @@ from discord.ext import commands
 
 from cogs.fun import FunError, launch_view
 from games.fun_score import TW
-from games.lottery_logic import BET_POOL, RANK_NAME, SHARES, first_prize_chance, is_due, new_state, settle_period
+from games.lottery_logic import (BET_POOL, RANK_NAME, SHARES, first_prize_chance, is_due, new_state, pull_in_draw,
+                                 settle_period)
 
 log = logging.getLogger(__name__)
 
@@ -60,6 +61,9 @@ class LotteryCog(commands.Cog):
         except (OSError, ValueError):
             d = {}
         d.setdefault('guilds', {})
+        now = datetime.now(TW)
+        for st in d['guilds'].values():   # 從每週改成每天：已經排好的週日開獎提前到下一個 21:00
+            pull_in_draw(st, now)
         return d
 
     def save(self):

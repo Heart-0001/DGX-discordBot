@@ -110,3 +110,26 @@ def test_valo_deathmatch_place_and_custom():
     assert valo_score(_valo(ffa=True, score='第 1 名'))['score'] == 8
     assert valo_score(_valo(ffa=True, score='第 12 名'))['score'] == 0
     assert valo_score(_valo(queue='自訂'))['skip']
+
+
+def _lcu_game(queue=2400, dur=1200):
+    parts, ids = [], []
+    for i, (name, team, k, d, a, dmg, win) in enumerate([
+            ('Heart', 100, 15, 3, 20, 45000, True), ('朋友', 100, 5, 5, 25, 20000, True),
+            ('隊友A', 100, 3, 6, 10, 15000, True), ('對手', 200, 8, 9, 5, 30000, False)], start=1):
+        parts.append({'participantId': i, 'teamId': team, 'championId': 103,
+                      'stats': {'kills': k, 'deaths': d, 'assists': a, 'win': win, 'totalDamageDealtToChampions': dmg}})
+        ids.append({'participantId': i, 'player': {'gameName': name, 'tagLine': 'TW2', 'puuid': f'lcu-{i}'}})
+    return {'gameId': 402400001, 'queueId': queue, 'gameMode': 'KIWI', 'gameDuration': dur,
+            'participants': parts, 'participantIdentities': ids}
+
+
+def test_lcu_mayhem_scored_like_api():
+    from games.fun_score import lcu_to_v5, lol_game_id, riot_key
+    m = lcu_to_v5(_lcu_game())
+    r = lol_score(m, riot_key('Heart', 'tw2'), {'103': '阿璃'})
+    # 勝利 2 + KDA 35/3=11.7 → 3 + 參團 35/23 → 2 + 傷害 45000/80000=56% → 2 = 9 → 封頂 8
+    assert r['score'] == 8 and r['queue'] == '隨機單中：大混戰' and r['who'] == '阿璃' and r['matchId'] == '402400001'
+    assert lol_score(m, riot_key('朋友', 'TW2'))['skip'] is None
+    assert lol_score(lcu_to_v5(_lcu_game(dur=150)), riot_key('Heart', 'TW2'))['skip']   # 重開
+    assert lol_game_id('TW2_402379706') == '402379706'

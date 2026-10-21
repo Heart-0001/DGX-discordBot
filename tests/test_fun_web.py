@@ -270,3 +270,71 @@ def test_grant_push_and_max_ticket_celebration(env):
     act = bot.cogs['ActLiveCog']
     assert [m['what'] for _, m in act.user_msgs] == ['grant', 'wallet']
     assert act.guild_msgs[0][1]['kind'] == 'max_ticket'
+
+
+# ── PC 客戶端對戰紀錄(大混戰) ──
+class FakePc:
+    def __init__(self, games, details):
+        self.games, self.details, self.calls = games, details, []
+
+    async def lcu(self, path, timeout=8):
+        self.calls.append(path)
+        if 'current-summoner/matches' in path:
+            return {'games': {'games': self.games}} if self.games is not None else None
+        gid = int(path.rsplit('/', 1)[-1])
+        return self.details.get(gid)
+
+
+def _game(gid, created_ms, players):
+    parts, ids = [], []
+    for i, (name, team, k, d, a, dmg, win) in enumerate(players, start=1):
+        parts.append({'participantId': i, 'teamId': team, 'championId': 103,
+                      'stats': {'kills': k, 'deaths': d, 'assists': a, 'win': win, 'totalDamageDealtToChampions': dmg}})
+        ids.append({'participantId': i, 'player': {'gameName': name, 'tagLine': 'TW2'}})
+    return {'gameId': gid, 'queueId': 2400, 'gameMode': 'KIWI', 'gameCreation': created_ms, 'gameDuration': 1200,
+            'participants': parts, 'participantIdentities': ids}
+
+
+PLAYERS = [('Heart', 100, 15, 3, 20, 45000, True), ('朋友', 100, 2, 8, 6, 9000, True),
+           ('路人', 100, 3, 6, 10, 15000, True), ('對手', 200, 8, 9, 5, 30000, False)]
+
+
+def _link(bot, uid, name, since):
+    u = bot.cogs['FunCog'].user(uid)
+    u['lol'].append({'name': name, 'tag': 'TW2', 'puuid': f'api-{uid}', 'last': 'x', 'since': since, 'seen': []})
+    u['guilds'] = [GID]
+
+
+def test_lcu_grants_mayhem_to_everyone_linked_in_the_game(env):
+    bot, web = env
+    fun = bot.cogs['FunCog']
+    _link(bot, UID, 'Heart', since=10_000)
+    _link(bot, 222, '朋友', since=10_000)
+    old = _game(1, 5_000_000, PLAYERS)          # 5000 秒開始 + 1200 秒 → 綁定(10000)前就結束 → 不發
+    new = _game(2, 20_000_000, PLAYERS)
+    pc = FakePc([new, old], {1: old, 2: new})
+    bot.cogs['LolCog'].pc = pc
+    asyncio.run(fun._check_lcu())
+    assert fun.tickets(UID) == 4 and fun.tickets(222) == 1        # Heart 滿分 4 張、朋友保底 1 張
+    assert all('/games/1' not in c for c in pc.calls)              # 綁定前的那場連細節都不用抓
+    assert fun.data['lcu_seen'] == ['1', '2']
+    # 再跑一次不重複發；API 那條路之後查到同一場(TW2_2)也不會再發
+    asyncio.run(fun._check_lcu())
+    assert fun.tickets(UID) == 4 and '2' in fun.user(UID)['lol'][0]['seen']
+    grants = [m for u, m in bot.cogs['ActLiveCog'].user_msgs if u == UID and m['what'] == 'grant']
+    assert len(grants) == 1 and grants[0]['data']['queue'] == '隨機單中：大混戰'
+
+
+def test_lcu_offline_or_detail_missing_retries_later(env):
+    bot, web = env
+    fun = bot.cogs['FunCog']
+    _link(bot, UID, 'Heart', since=10_000)
+    bot.cogs['LolCog'].pc = FakePc(None, {})                       # 客戶端沒開
+    asyncio.run(fun._check_lcu())
+    g = _game(3, 20_000_000, PLAYERS)
+    bot.cogs['LolCog'].pc = FakePc([g], {})                        # 列表有、細節還抓不到
+    asyncio.run(fun._check_lcu())
+    assert fun.tickets(UID) == 0 and fun.data['lcu_seen'] == []
+    bot.cogs['LolCog'].pc = FakePc([g], {3: g})
+    asyncio.run(fun._check_lcu())
+    assert fun.tickets(UID) == 4

@@ -24,7 +24,8 @@ from discord.ext import commands
 from cogs.valo import parse_rid
 from cogs.valo_parse import summarize
 from games import fun_shop
-from games.fun_score import DAILY_CAP, cap_grant, lol_score, parts_text, today, valo_score
+from games.fun_score import (DAILY_CAP, cap_grant, lcu_to_v5, lol_game_id, lol_score, parts_text, riot_key, today,
+                             valo_score)
 
 log = logging.getLogger(__name__)
 
@@ -33,6 +34,9 @@ WALLET_FILE = os.path.join(ROOT, 'data', 'fun_wallet.json')
 MAX_PER_GAME = 3
 LOL_ROUND = 60            # 秒：每個 LoL 帳號大約多久查一次
 VALO_GAP = 20             # 秒：兩次 HenrikDev 查詢至少隔多久(額度 30/分鐘，valo-track 也在用)
+LCU_EVERY = 60            # 秒：PC 客戶端對戰紀錄多久看一次(補 API 查不到的大混戰)
+LCU_RECENT = 5            # 每次看最近幾場
+SEEN_KEEP = 40            # 每個帳號記住最近幾場處理過的 gameId(API 和客戶端兩條路去重)
 DAILY_TICKETS = 1
 RECENT_GRANTS = 10
 GAMES = {'lol': 'LoL', 'valo': 'Valorant'}
@@ -63,7 +67,8 @@ class FunCog(commands.Cog):
         self._tasks: list[asyncio.Task] = []
 
     async def cog_load(self):
-        self._tasks = [asyncio.ensure_future(self._lol_loop()), asyncio.ensure_future(self._valo_loop())]
+        self._tasks = [asyncio.ensure_future(self._lol_loop()), asyncio.ensure_future(self._valo_loop()),
+                       asyncio.ensure_future(self._lcu_loop())]
         n = sum(len(u.get(g, [])) for u in self.data['users'].values() for g in GAMES)
         log.info(f'🎟️ 活動核心：{len(self.data["users"])} 位玩家、綁定 {n} 個帳號')
 
@@ -81,6 +86,12 @@ class FunCog(commands.Cog):
             d = {}
         d.setdefault('users', {})
         d.setdefault('channels', {})
+        d.setdefault('lcu_seen', [])          # 客戶端對戰紀錄看過的 gameId
+        now = time.time()
+        for u in d['users'].values():         # 舊資料補欄位：since = 從什麼時候開始算(綁定時間)
+            for a in u.get('lol', []):
+                a.setdefault('since', now)
+                a.setdefault('seen', [])
         return d
 
     def save(self):
@@ -206,6 +217,8 @@ class FunCog(commands.Cog):
         if owner:
             raise FunError(f'這個帳號已經被 {self.name_of(owner)} 綁走了；如果那不是他的帳號，請管理員處理')
         acc['last'] = None          # 第一次查只記下最新一場，不補發綁定前的對局
+        if game == 'lol':
+            acc.update(since=time.time(), seen=[])   # 客戶端那條路：只算綁定之後結束的對局
         u[game].append(acc)
         self.save()
         log.info(f"🎟️ {self.name_of(uid)} 綁定 {GAMES[game]} {acc['name']}#{acc['tag']}")
@@ -378,13 +391,71 @@ class FunCog(commands.Cog):
             return
         names = lol.static.data.get('champNames', {})
         for mid in self._new_ids(ids, acc['last']):
-            m = await api.match(mid)
-            if not m:
-                return                      # 還查不到詳細資料，下輪再試(last 不動)
-            r = lol_score(m, acc['puuid'], names)
-            if r:
-                await self._grant(uid, acc, r)
+            if lol_game_id(mid) not in acc.get('seen', []):   # 客戶端那條路先處理過了就不再發
+                m = await api.match(mid)
+                if not m:
+                    return                      # 還查不到詳細資料，下輪再試(last 不動)
+                r = lol_score(m, acc['puuid'], names)
+                if r:
+                    await self._grant(uid, acc, r)
+                self._mark_seen(acc, lol_game_id(mid))
             acc['last'] = mid
+            self.save()
+
+    @staticmethod
+    def _mark_seen(acc: dict, gid: str):
+        seen = acc.setdefault('seen', [])
+        seen.append(gid)
+        del seen[:-SEEN_KEEP]
+
+    # ── PC 客戶端對戰紀錄(補 API 查不到的模式) ──
+    async def _lcu_loop(self):
+        """台服 API 查不到大混戰(2400)：PC 的 LoL 客戶端開著時，每分鐘看一次登入帳號的對戰紀錄。
+        同一場裡其他有綁定的人(用 名字#tag 對)也一起算；只看得到這台 PC 打的對局。"""
+        await self.bot.wait_until_ready()
+        while True:
+            await asyncio.sleep(LCU_EVERY)
+            try:
+                if self._accounts('lol'):
+                    await self._check_lcu()
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                log.warning(f'🎟️ 客戶端對戰紀錄檢查例外: {e!r}')
+
+    async def _check_lcu(self):
+        lol = self.bot.get_cog('LolCog')
+        pc = getattr(lol, 'pc', None)
+        if not pc:
+            return
+        h = await pc.lcu(f'/lol-match-history/v1/products/lol/current-summoner/matches'
+                         f'?begIndex=0&endIndex={LCU_RECENT}', timeout=20)
+        games = ((h or {}).get('games') or {}).get('games') or []
+        seen = self.data['lcu_seen']
+        new = sorted((g for g in games if g.get('gameId') and str(g['gameId']) not in seen),
+                     key=lambda g: g.get('gameCreation') or 0)
+        if not new:
+            return
+        accs = {riot_key(a['name'], a['tag']): (uid, a) for uid, a in self._accounts('lol')}
+        names = lol.static.data.get('champNames', {})
+        for g in new:
+            gid = str(g['gameId'])
+            end = (g.get('gameCreation') or 0) / 1000 + (g.get('gameDuration') or 0)
+            if any(end > a.get('since', 0) for _, a in accs.values()):   # 綁定前就結束的不用細看
+                d = await pc.lcu(f'/lol-match-history/v1/games/{int(gid)}', timeout=30)
+                if not isinstance(d, dict) or not d.get('participants'):
+                    return                                                  # 下輪再試
+                m = lcu_to_v5(d)
+                for p in (m or {}).get('info', {}).get('participants', []):
+                    uid, a = accs.get(p['puuid'], (None, None))
+                    if not a or end <= a.get('since', 0) or gid in a.get('seen', []):
+                        continue
+                    r = lol_score(m, p['puuid'], names)
+                    if r:
+                        await self._grant(uid, a, r)
+                    self._mark_seen(a, gid)
+            seen.append(gid)
+            del seen[:-200]
             self.save()
 
     async def _check_valo(self, uid: int, acc: dict):

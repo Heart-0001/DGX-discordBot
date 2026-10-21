@@ -105,6 +105,41 @@ def lol_score(match: dict, puuid: str, champ_names: Optional[dict] = None) -> Op
     return _finish(parts, **base)
 
 
+def riot_key(name: str, tag: str) -> str:
+    return f'{name}#{tag}'.lower()
+
+
+def lol_game_id(match_id: str) -> str:
+    """API 的 matchId(TW2_402379706)→ 客戶端的 gameId(402379706)，兩邊去重用。"""
+    return str(match_id).rsplit('_', 1)[-1]
+
+
+def lcu_to_v5(game: dict) -> Optional[dict]:
+    """客戶端對戰紀錄單場(/lol-match-history/v1/games/{id})→ match-v5 的形狀，給 lol_score 用。
+
+    台服 API 查不到大混戰(2400)，客戶端什麼模式都有。puuid 換成 名字#tag(小寫)：客戶端的 puuid 跟 API 的不同，
+    綁定的帳號是用名字對。"""
+    ids = {pi.get('participantId'): pi.get('player') or {} for pi in (game or {}).get('participantIdentities') or []}
+    ps = []
+    for p in (game or {}).get('participants') or []:
+        st = p.get('stats') or {}
+        pl = ids.get(p.get('participantId')) or {}
+        if not pl.get('gameName'):
+            continue
+        ps.append({'puuid': riot_key(pl['gameName'], pl.get('tagLine', '')), 'teamId': p.get('teamId'),
+                   'championId': p.get('championId'), 'kills': st.get('kills', 0), 'deaths': st.get('deaths', 0),
+                   'assists': st.get('assists', 0), 'win': bool(st.get('win')),
+                   'totalDamageDealtToChampions': st.get('totalDamageDealtToChampions', 0),
+                   'gameEndedInEarlySurrender': bool(st.get('gameEndedInEarlySurrender')),
+                   'placement': st.get('subteamPlacement')})
+    if not ps:
+        return None
+    return {'metadata': {'matchId': str(game.get('gameId', ''))},
+            'info': {'queueId': game.get('queueId'), 'gameMode': game.get('gameMode', ''),
+                     'gameDuration': game.get('gameDuration', 0), 'gameEndTimestamp': 1,   # 客戶端的長度是秒
+                     'participants': ps}}
+
+
 _PLACE_RE = re.compile(r'第\s*(\d+)\s*名')
 
 

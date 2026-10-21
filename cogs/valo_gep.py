@@ -17,10 +17,12 @@ FEED_KEEP = 12   # 擊殺紀錄留最近幾筆
 # GEP 給的是 HUD 圖示名(內部代號)，對到遊戲裡的武器名；沒列到的就去掉前綴直接顯示
 WEAPONS = {
     'classic': 'Classic', 'glock': 'Classic', 'luger': 'Ghost', 'sheriff': 'Sheriff', 'revolver': 'Sheriff',
-    'slim': 'Shorty', 'autopistol': 'Frenzy', 'ninja': 'Stinger', 'vector': 'Stinger', 'mp5': 'Spectre',
+    # ninja = Spectre：計分板(手上的槍)是 SMGs_Ninja 的人，擊殺紀錄是 SMG_MP5_S(2026-10-18 錄的對局比對)
+    'slim': 'Shorty', 'autopistol': 'Frenzy', 'ninja': 'Spectre', 'vector': 'Stinger', 'mp5': 'Spectre',
     'pump': 'Bucky', 'persuader': 'Judge', 'autoshotgun': 'Judge', 'burst': 'Bulldog', 'dmr': 'Guardian',
     'ghost': 'Phantom', 'ar10a2': 'Phantom', 'carbine': 'Phantom', 'volcano': 'Vandal', 'ak': 'Vandal',
     'bolt': 'Marshal', 'operater': 'Operator', 'operator': 'Operator', 'doublesniper': 'Outlaw',
+    'compact': 'Bandit', 'battlerifle': 'Warden',   # 新槍：valorant-api 的 assetPath 是 Compact / BattleRifle
     'lmg': 'Ares', 'hmg': 'Odin', 'knife': '近戰', 'melee': '近戰', 'falleddamage': '摔死', 'fallendamage': '摔死',
 }
 

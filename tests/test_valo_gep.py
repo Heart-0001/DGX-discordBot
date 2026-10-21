@@ -47,8 +47,15 @@ class TestWeaponName(unittest.TestCase):
         self.assertEqual(weapon_name('TX_Hud_Wushu_X_Dagger'), '大招')
         self.assertEqual(weapon_name(''), '')
 
+    def test_smgs_and_new_guns(self):
+        # 手上拿 SMGs_Ninja 的人，擊殺紀錄是 SMG_MP5_S → 兩個都是 Spectre(以前誤標成 Stinger)
+        self.assertEqual(weapon_name('TX_Hud_SMGs_Ninja'), 'Spectre')
+        self.assertEqual(weapon_name('TX_Hud_SMG_MP5_S'), 'Spectre')
+        self.assertEqual(weapon_name('TX_Hud_Pistol_Compact'), 'Bandit')
+        self.assertEqual(weapon_name('TX_Hud_Rifle_BattleRifle'), 'Warden')
+
     def test_unknown_kept_readable(self):
-        self.assertEqual(weapon_name('TX_Hud_Pistol_Compact'), 'Compact')
+        self.assertEqual(weapon_name('TX_Hud_Pistol_Mystery_Gun'), 'Mystery Gun')
 
 
 class TestFixtureMatch(unittest.TestCase):

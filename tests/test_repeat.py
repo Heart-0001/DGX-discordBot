@@ -150,7 +150,7 @@ class TestRepeatOne(unittest.IsolatedAsyncioTestCase):
         state.repeat = 'one'
         state.queue = []
 
-        vc = make_vc()
+        vc = make_vc(playing=False)   # _play_next 在上一首播完(語音空閒)時才被呼叫
         started: list[str] = []
 
         async def fake_ensure(s):
@@ -185,10 +185,26 @@ class TestRepeatOne(unittest.IsolatedAsyncioTestCase):
 
         with patch.object(cog, '_ensure_stream_url', side_effect=fake_ensure), \
              patch.object(cog, '_start_song'):
-            await cog._play_next(1, make_vc())
+            await cog._play_next(1, make_vc(playing=False))
 
         self.assertEqual(fetched_urls, [''],
                          'URL must be cleared before fetching so a fresh stream is obtained')
+
+    async def test_busy_voice_not_overridden(self):
+        """抓 URL 期間使用者用 /play 起播了(語音佔用中) → repeat one 不能蓋掉它。"""
+        cog = make_cog()
+        state = cog.get_state(1)
+        state.current = make_song('Looping Song')
+        state.repeat = 'one'
+
+        async def fake_ensure(s):
+            s['url'] = 'http://refreshed.url/audio.opus'
+
+        with patch.object(cog, '_ensure_stream_url', side_effect=fake_ensure), \
+             patch.object(cog, '_start_song') as start:
+            await cog._play_next(1, make_vc(playing=True))
+
+        start.assert_not_called()
 
     async def test_fallback_on_fetch_error(self):
         """If the URL refresh fails, repeat one must fall through to the queue."""
@@ -210,7 +226,7 @@ class TestRepeatOne(unittest.IsolatedAsyncioTestCase):
 
         with patch.object(cog, '_ensure_stream_url', side_effect=fail_ensure), \
              patch.object(cog, '_start_song', side_effect=fake_start):
-            await cog._play_next(1, make_vc())
+            await cog._play_next(1, make_vc(playing=False))
 
         self.assertEqual(started, ['Next'],
                          'Should fall through to queue when repeat one fetch fails')
@@ -239,7 +255,7 @@ class TestRepeatAll(unittest.IsolatedAsyncioTestCase):
 
         with patch.object(cog, '_ensure_stream_url', side_effect=fake_ensure), \
              patch.object(cog, '_start_song', side_effect=fake_start):
-            await cog._play_next(1, make_vc())
+            await cog._play_next(1, make_vc(playing=False))
 
         # Next played song must be Song B (front of queue)
         self.assertEqual(started, ['Song B'])
@@ -262,7 +278,7 @@ class TestRepeatAll(unittest.IsolatedAsyncioTestCase):
 
         with patch.object(cog, '_ensure_stream_url', side_effect=fake_ensure), \
              patch.object(cog, '_start_song'):
-            await cog._play_next(1, make_vc())
+            await cog._play_next(1, make_vc(playing=False))
 
         requeued = state.queue[0]
         self.assertEqual(requeued['url'], '',
@@ -287,7 +303,7 @@ class TestRepeatAll(unittest.IsolatedAsyncioTestCase):
 
         with patch.object(cog, '_ensure_stream_url', side_effect=fake_ensure), \
              patch.object(cog, '_start_song', side_effect=fake_start):
-            await cog._play_next(1, make_vc())
+            await cog._play_next(1, make_vc(playing=False))
 
         self.assertEqual(started, ['Solo'])
         # Queue must be empty again (song was popped to play)
@@ -317,7 +333,7 @@ class TestRepeatAll(unittest.IsolatedAsyncioTestCase):
 
         with patch.object(cog, '_ensure_stream_url', side_effect=fake_ensure), \
              patch.object(cog, '_start_song', side_effect=fake_start):
-            await cog._play_next(1, make_vc())
+            await cog._play_next(1, make_vc(playing=False))
 
         self.assertEqual(started, ['Song B'])
         # Song A must be re-queued even though skip was pressed

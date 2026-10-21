@@ -36,6 +36,8 @@ LOL_ROUND = 60            # 秒：每個 LoL 帳號大約多久查一次
 VALO_GAP = 20             # 秒：兩次 HenrikDev 查詢至少隔多久(額度 30/分鐘，valo-track 也在用)
 LCU_EVERY = 60            # 秒：PC 客戶端對戰紀錄多久看一次(補 API 查不到的大混戰)
 LCU_RECENT = 5            # 每次看最近幾場
+LCU_BURST = 90            # 秒：對局一結束就連續看這麼久(打完馬上關客戶端也抓得到)
+LCU_BURST_GAP = 5         # 秒：連續看的間隔(對戰紀錄比結算畫面晚幾秒才有)
 SEEN_KEEP = 40            # 每個帳號記住最近幾場處理過的 gameId(API 和客戶端兩條路去重)
 DAILY_TICKETS = 1
 RECENT_GRANTS = 10
@@ -65,6 +67,7 @@ class FunCog(commands.Cog):
         self.bot = bot
         self.data = self._load()
         self._tasks: list[asyncio.Task] = []
+        self._lcu_kick = asyncio.Event()
 
     async def cog_load(self):
         self._tasks = [asyncio.ensure_future(self._lol_loop()), asyncio.ensure_future(self._valo_loop()),
@@ -409,25 +412,41 @@ class FunCog(commands.Cog):
         del seen[:-SEEN_KEEP]
 
     # ── PC 客戶端對戰紀錄(補 API 查不到的模式) ──
+    def lcu_game_ended(self):
+        """LolCog 看到 gameflow 進結算 → 馬上開始看對戰紀錄，不等下一分鐘。"""
+        self._lcu_kick.set()
+
     async def _lcu_loop(self):
-        """台服 API 查不到大混戰(2400)：PC 的 LoL 客戶端開著時，每分鐘看一次登入帳號的對戰紀錄。
+        """台服 API 查不到大混戰(2400)、競技場(1700)：PC 的 LoL 客戶端開著時，每分鐘看一次登入帳號的對戰紀錄；
+        對局一結束(LolCog 通知)就每 5 秒看一次，看到新的一場或 90 秒後停。
         同一場裡其他有綁定的人(用 名字#tag 對)也一起算；只看得到這台 PC 打的對局。"""
         await self.bot.wait_until_ready()
         while True:
-            await asyncio.sleep(LCU_EVERY)
             try:
-                if self._accounts('lol'):
-                    await self._check_lcu()
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:
-                log.warning(f'🎟️ 客戶端對戰紀錄檢查例外: {e!r}')
+                await asyncio.wait_for(self._lcu_kick.wait(), LCU_EVERY)
+            except asyncio.TimeoutError:
+                pass
+            until = time.monotonic() + LCU_BURST if self._lcu_kick.is_set() else 0
+            self._lcu_kick.clear()
+            while True:
+                found = 0
+                try:
+                    if self._accounts('lol'):
+                        found = await self._check_lcu()
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    log.warning(f'🎟️ 客戶端對戰紀錄檢查例外: {e!r}')
+                if found or time.monotonic() >= until:
+                    break
+                await asyncio.sleep(LCU_BURST_GAP)
 
-    async def _check_lcu(self):
+    async def _check_lcu(self) -> int:
+        """回傳這次處理掉幾場新的對局。"""
         lol = self.bot.get_cog('LolCog')
         pc = getattr(lol, 'pc', None)
         if not pc:
-            return
+            return 0
         h = await pc.lcu(f'/lol-match-history/v1/products/lol/current-summoner/matches'
                          f'?begIndex=0&endIndex={LCU_RECENT}', timeout=20)
         games = ((h or {}).get('games') or {}).get('games') or []
@@ -435,7 +454,8 @@ class FunCog(commands.Cog):
         new = sorted((g for g in games if g.get('gameId') and str(g['gameId']) not in seen),
                      key=lambda g: g.get('gameCreation') or 0)
         if not new:
-            return
+            return 0
+        done = 0
         accs = {riot_key(a['name'], a['tag']): (uid, a) for uid, a in self._accounts('lol')}
         names = lol.static.data.get('champNames', {})
         for g in new:
@@ -444,7 +464,7 @@ class FunCog(commands.Cog):
             if any(end > a.get('since', 0) for _, a in accs.values()):   # 綁定前就結束的不用細看
                 d = await pc.lcu(f'/lol-match-history/v1/games/{int(gid)}', timeout=30)
                 if not isinstance(d, dict) or not d.get('participants'):
-                    return                                                  # 下輪再試
+                    return done                                             # 下輪再試
                 m = lcu_to_v5(d)
                 for p in (m or {}).get('info', {}).get('participants', []):
                     uid, a = accs.get(p['puuid'], (None, None))
@@ -457,6 +477,8 @@ class FunCog(commands.Cog):
             seen.append(gid)
             del seen[:-200]
             self.save()
+            done += 1
+        return done
 
     async def _check_valo(self, uid: int, acc: dict):
         valo = self.bot.get_cog('ValoCog')

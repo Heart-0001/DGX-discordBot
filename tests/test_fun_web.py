@@ -338,3 +338,63 @@ def test_lcu_offline_or_detail_missing_retries_later(env):
     bot.cogs['LolCog'].pc = FakePc([g], {3: g})
     asyncio.run(fun._check_lcu())
     assert fun.tickets(UID) == 4
+
+
+class SlowPc(FakePc):
+    """對戰紀錄比結算畫面晚幾次才出現這場。"""
+    def __init__(self, game, late):
+        super().__init__([], {game['gameId']: game})
+        self.game, self.late = game, late
+
+    async def lcu(self, path, timeout=8):
+        if 'current-summoner/matches' in path:
+            self.late -= 1
+            self.games = [self.game] if self.late < 0 else []
+        return await super().lcu(path, timeout)
+
+
+def test_lcu_game_end_kick_checks_right_away_until_found(env, monkeypatch):
+    bot, web = env
+    fun = bot.cogs['FunCog']
+    _link(bot, UID, 'Heart', since=10_000)
+    monkeypatch.setattr(cogs.fun, 'LCU_EVERY', 3600)        # 沒有通知就要等一小時 → 有發券一定是通知觸發的
+    monkeypatch.setattr(cogs.fun, 'LCU_BURST_GAP', 0.01)
+    pc = SlowPc(_game(5, 20_000_000, PLAYERS), late=3)
+    bot.cogs['LolCog'].pc = pc
+
+    async def ready():
+        pass
+    bot.wait_until_ready = ready
+
+    async def run():
+        fun._lcu_kick = asyncio.Event()
+        task = asyncio.ensure_future(fun._lcu_loop())
+        await asyncio.sleep(0.05)
+        assert fun.tickets(UID) == 0                          # 還沒通知
+        fun.lcu_game_ended()
+        for _ in range(100):
+            await asyncio.sleep(0.01)
+            if fun.tickets(UID):
+                break
+        n = sum('current-summoner/matches' in c for c in pc.calls)
+        await asyncio.sleep(0.1)
+        task.cancel()
+        return n, sum('current-summoner/matches' in c for c in pc.calls)
+
+    n, after = asyncio.run(run())
+    assert fun.tickets(UID) == 4 and n == 4                   # 前 3 次列表沒有，第 4 次看到就發
+    assert after == n                                         # 找到之後就停，回到每分鐘(這裡是一小時)
+
+
+def test_lcu_arena_scored_by_placement(env):
+    bot, web = env
+    fun = bot.cogs['FunCog']
+    _link(bot, UID, 'Heart', since=10_000)
+    g = _game(6, 20_000_000, PLAYERS)
+    g.update(queueId=1700, gameMode='CHERRY')
+    for p, place in zip(g['participants'], (1, 1, 5, 8)):
+        p['stats']['subteamPlacement'] = place
+    bot.cogs['LolCog'].pc = FakePc([g], {6: g})
+    assert asyncio.run(fun._check_lcu()) == 1
+    (grant,) = [m for u, m in bot.cogs['ActLiveCog'].user_msgs if u == UID and m['what'] == 'grant']
+    assert grant['data']['queue'] == '鬥魂競技場' and grant['data']['score'] == 8 and fun.tickets(UID) == 4

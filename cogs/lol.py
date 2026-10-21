@@ -625,6 +625,10 @@ class LolCog(commands.Cog):
             q = (sess.get('gameData') or {}).get('queue') or {}
             qid = q.get('id') or None
             self._set(queue={'id': qid, 'name': queue_name(qid, q.get('description', ''))} if qid else None)
+            if phase in EOG_PHASES and last_phase not in EOG_PHASES:
+                fun = self.bot.get_cog('FunCog')
+                if fun:
+                    fun.lcu_game_ended()           # 活動換券：打完馬上看對戰紀錄(競技場、大混戰 API 查不到)
             if phase in INGAME_PHASES or phase in EOG_PHASES:
                 gid = (sess.get('gameData') or {}).get('gameId')
                 if gid and gid != (self.state.get('eog') or {}).get('gameId'):

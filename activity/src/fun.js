@@ -278,7 +278,6 @@ function rerenderIf(tab) { if (S.tab === tab && !$('funpanel').hidden) render();
 function vHome() {
   const w = S.wallet;
   if (!w) return loadingHtml();
-  const pct = w.cap ? Math.min(100, (w.earned / w.cap) * 100) : 0;
   const grants = (w.grants || []).map((g) => `<li><span class="g-day">${esc(g.day)}</span><span class="g-who">${esc(g.game)}・${esc(g.who)} <small>${esc(g.kda)}</small></span>
       <span class="g-sc">表現 ${esc(g.score)}/8</span><b class="g-got">+${esc(g.got)} 張</b>${g.parts ? `<small class="g-parts">${g.parts.map((p) => `${esc(p[0])} +${esc(p[1])}`).join('・')}</small>` : ''}</li>`).join('');
   const accs = ['lol', 'valo'].map((g) => ((w.accounts || {})[g] || []).map((a) => `<span class="acc ${g}">${GAME_NAME[g]}・${esc(a.name)}<small>#${esc(a.tag)}</small>
@@ -286,7 +285,7 @@ function vHome() {
   return `<div class="f-stats">
       <div class="f-stat"><small>券</small><b>🎟️ ${num(w.tickets)}</b></div>
       <div class="f-stat"><small>代幣</small><b>🪙 ${num(w.coins)}</b></div>
-      <div class="f-stat"><small>今天對局拿券</small><b>${num(w.earned)} / ${num(w.cap)}</b><i class="f-bar"><u style="width:${pct}%"></u></i></div>
+      <div class="f-stat"><small>今天對局拿券</small><b>🎟️ ${num(w.earned)}</b></div>
     </div>
     <p class="f-hint">打得好拿比較多張券，每張券機率都一樣。打完 LoL / Valorant 會自動換券。</p>
     <div class="f-row"><button type="button" class="f-btn pri" data-act="daily"${w.daily ? ' disabled' : ''}>${w.daily ? '✅ 今天已簽到' : '📅 每日簽到'}</button>
@@ -816,7 +815,7 @@ function finishBj(g) {
 // ═══════════ 推播：錢包、對局換券卡片 ═══════════
 let cardTimer = 0;
 function showGrant(g) {
-  if (S.wallet) { S.wallet.tickets = g.tickets; S.wallet.earned = g.earned; S.wallet.cap = g.cap; setWallet(S.wallet); }
+  if (S.wallet) { S.wallet.tickets = g.tickets; S.wallet.earned = g.earned; setWallet(S.wallet); }
   const el = $('fun-card');
   const parts = (g.parts || []).map((p) => `${esc(p[0])} +${esc(p[1])}`).join('・');
   el.innerHTML = `<div class="fc-t">打完 ${esc(g.game)} ${esc(g.queue)}(${g.won ? '勝利' : '落敗'}) <b>${esc(g.who)}</b> <small>${esc(g.kda)}</small></div>

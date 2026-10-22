@@ -1,7 +1,7 @@
 """對局表現 → 表現分(0–8) → 券數。純函式，方便測試。
 
 規則(2026-10 跟使用者定的)：打得好只會拿到「比較多張券」，每張券在各活動的機率都一樣；
-打得再爛也保底 1 張。每天(台灣時間)從對局拿的券有上限，避免一天刷十幾場的人拉開太多。
+打得再爛也保底 1 張。沒有每日上限(2026-10-22 使用者拿掉：大家偶爾有空才打，不該限制)。
 """
 import re
 from datetime import datetime, timedelta, timezone
@@ -11,7 +11,6 @@ from cogs.lol_parse import QUEUE_NAMES
 
 TW = timezone(timedelta(hours=8))
 MAX_SCORE = 8
-DAILY_CAP = 12            # 每天從對局拿的券上限(簽到不算在內)
 REMAKE_SEC = 300          # LoL 不到 5 分鐘的對局視為重開，不給券
 LOL_SKIP_QUEUES = {0}     # 自訂對戰
 VALO_SKIP_QUEUES = {'自訂', '訓練場', '基礎訓練'}
@@ -30,10 +29,6 @@ def tickets_for(score: int) -> int:
     if score >= 3:
         return 2
     return 1
-
-
-def cap_grant(want: int, earned_today: int, cap: int = DAILY_CAP) -> int:
-    return max(0, min(want, cap - earned_today))
 
 
 def _tier(value: float, steps: list[tuple[float, int]]) -> int:

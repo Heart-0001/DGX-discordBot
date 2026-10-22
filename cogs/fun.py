@@ -24,7 +24,7 @@ from discord.ext import commands
 from cogs.valo import parse_rid
 from cogs.valo_parse import summarize
 from games import fun_shop
-from games.fun_score import (DAILY_CAP, cap_grant, lcu_to_v5, lol_game_id, lol_score, parts_text, riot_key, today,
+from games.fun_score import (lcu_to_v5, lol_game_id, lol_score, parts_text, riot_key, today,
                              valo_score)
 
 log = logging.getLogger(__name__)
@@ -184,7 +184,7 @@ class FunCog(commands.Cog):
     def wallet(self, uid: int) -> dict:
         u = self.user(uid)
         title = fun_shop.BY_ID.get(u['equip'].get('title') or '')
-        return {'tickets': u['tickets'], 'coins': u['coins'], 'earned': u['earned'], 'cap': DAILY_CAP,
+        return {'tickets': u['tickets'], 'coins': u['coins'], 'earned': u['earned'],
                 'daily': u['daily'] == today(),
                 'accounts': {g: [{'name': a['name'], 'tag': a['tag']} for a in u[g]] for g in GAMES},
                 'grants': u['grants'][-RECENT_GRANTS:][::-1],
@@ -515,33 +515,32 @@ class FunCog(commands.Cog):
         if r['skip']:
             log.info(f"🎟️ {acc['name']} {game} {r['matchId'][:12]}：{r['skip']}")
             return
-        got = cap_grant(r['tickets'], u['earned'])
+        got = r['tickets']
         u['tickets'] += got
         u['earned'] += got
         u['total'] += got
         u['grants'] = (u['grants'] + [{'day': today(), 'game': game, 'who': r['who'], 'kda': r['kda'],
                                        'score': r['score'], 'got': got}])[-RECENT_GRANTS:]
         self.save()
-        log.info(f"🎟️ {acc['name']} {game} {r['matchId'][:12]}：{r['score']}/8 分 → +{got} 張(想給 {r['tickets']})")
+        log.info(f"🎟️ {acc['name']} {game} {r['matchId'][:12]}：{r['score']}/8 分 → +{got} 張")
         web = self.bot.get_cog('FunWebCog')
         if web:
             try:
                 await web.on_grant(uid, {'game': game, 'queue': r['queue'], 'won': r['won'], 'who': r['who'],
                                          'kda': r['kda'], 'score': r['score'], 'parts': r['parts'], 'got': got,
-                                         'tickets': u['tickets'], 'earned': u['earned'], 'cap': DAILY_CAP})
+                                         'tickets': u['tickets'], 'earned': u['earned']})
             except Exception as e:
                 log.warning(f'🎟️ 換券推播失敗: {e!r}')
         res = '勝利' if r['won'] else '落敗'
-        cap_note = '' if got == r['tickets'] else f'（今天上限 {DAILY_CAP} 張，只給 {got}）'
         text = (f"🎟️ <@{uid}> 打完 {game} {r['queue']}（{res}）{_esc(r['who'])} **{r['kda']}**\n"
-                f"表現 **{r['score']}/8**：{parts_text(r['parts'])} → **+{got} 張券**{cap_note}"
-                f"・現在 {u['tickets']} 張（今天 {u['earned']}/{DAILY_CAP}）")
+                f"表現 **{r['score']}/8**：{parts_text(r['parts'])} → **+{got} 張券**"
+                f"・現在 {u['tickets']} 張")
         for gid in u['guilds']:
             ch = self.channel_for(gid)
             if not ch:
                 continue
             try:
-                await ch.send(text, view=launch_view(), allowed_mentions=discord.AllowedMentions(users=[discord.Object(uid)]))
+                await ch.send(text, view=launch_view(), allowed_mentions=discord.AllowedMentions.none())
             except discord.HTTPException as e:
                 log.warning(f'🎟️ 換券公告發送失敗 <#{ch.id}>: {e!r}')
 

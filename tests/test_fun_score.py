@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from games.fun_score import cap_grant, lol_score, parts_text, tickets_for, today, valo_score
+from games.fun_score import lol_score, parts_text, tickets_for, today, valo_score
 
 
 def _lol(me: dict, mates=None, enemies=None, queue=420, dur=1800, mode='CLASSIC'):
@@ -14,13 +14,6 @@ def _lol(me: dict, mates=None, enemies=None, queue=420, dur=1800, mode='CLASSIC'
 
 def test_tickets_for_floor_and_steps():
     assert [tickets_for(s) for s in range(9)] == [1, 1, 1, 2, 2, 2, 3, 3, 4]
-
-
-def test_cap_grant():
-    assert cap_grant(3, 0) == 3
-    assert cap_grant(3, 10) == 2
-    assert cap_grant(3, 12) == 0
-    assert cap_grant(4, 20) == 0
 
 
 def test_today_uses_taiwan_time():

@@ -121,7 +121,7 @@ def test_unknown_op(env):
 def test_home_and_daily(env):
     bot, web = env
     w = ok(web, 'home')['wallet']
-    assert w['tickets'] == 0 and w['daily'] is False and w['cap'] == 12
+    assert w['tickets'] == 0 and w['daily'] is False and 'cap' not in w
     d = ok(web, 'daily')
     assert d['got'] == 1 and d['wallet']['tickets'] == 1 and d['wallet']['daily'] is True
     assert '簽到過' in call(web, 'daily')['error']
@@ -265,7 +265,7 @@ def test_grant_push_and_max_ticket_celebration(env):
     bot, web = env
     bot.cogs['FunCog'].seen(UID, GID)
     grant = {'game': 'LoL', 'queue': '單/雙積分', 'won': True, 'who': '阿璃', 'kda': '12/1/8', 'score': 8,
-             'parts': [['勝利', 2]], 'got': 4, 'tickets': 4, 'earned': 4, 'cap': 12}
+             'parts': [['勝利', 2]], 'got': 4, 'tickets': 4, 'earned': 4}
     asyncio.run(web.on_grant(UID, grant))
     act = bot.cogs['ActLiveCog']
     assert [m['what'] for _, m in act.user_msgs] == ['grant', 'wallet']

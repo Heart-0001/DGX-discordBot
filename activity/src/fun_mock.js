@@ -8,7 +8,7 @@ const need = (n) => { if (W.tickets < n) throw new Error(`券不夠：你有 ${W
 
 // ── 錢包 ──
 const W = {
-  tickets: 14, coins: 1200, earned: 5, cap: 12, daily: false,
+  tickets: 14, coins: 1200, earned: 5, daily: false,
   accounts: { lol: [{ name: '阿璃愛好者', tag: 'TW2' }], valo: [] },
   grants: [
     { day: '今天', game: 'LoL', who: '阿璃', kda: '12/2/8', score: 7, got: 3 },
@@ -331,7 +331,7 @@ export function startMock(h) {
     const got = [1, 2, 3, 4][n % 4];
     W.tickets += got; W.earned += got;
     const g = { game: n % 2 ? 'Valorant' : 'LoL', queue: n % 2 ? '競技模式' : '單雙積分', won: n % 3 !== 0, who: n % 2 ? '婕提' : '阿璃', kda: n % 2 ? '21/9/5' : '12/2/8', score: 4 + got,
-      parts: [['勝利', 2], ['KDA 高', 1], ['輸出領先', Math.max(0, got - 3)]].filter((p) => p[1] > 0), got, tickets: W.tickets, earned: W.earned, cap: W.cap };
+      parts: [['勝利', 2], ['KDA 高', 1], ['輸出領先', Math.max(0, got - 3)]].filter((p) => p[1] > 0), got, tickets: W.tickets, earned: W.earned };
     W.grants.unshift({ day: '今天', game: g.game, who: g.who, kda: g.kda, score: g.score, got });
     h.push('grant', g);
     setTimeout(() => h.celebrate({ type: 'celebrate', icon: null, ...KINDS[n % KINDS.length] }), 2500);

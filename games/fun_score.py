@@ -60,10 +60,32 @@ def _skip(reason: str, **kw) -> dict:
     return {'score': 0, 'tickets': 0, 'parts': [], 'skip': reason, **kw}
 
 
+# 團隊貢獻：(名稱, 佔全隊比例的欄位, 門檻)。承傷 = 受到的傷害 + 自身減免的傷害；控制 = 讓敵人被控的秒數
+ROLE_SHARES = [
+    ('傷害', ('totalDamageDealtToChampions',), [(0.28, 2), (0.22, 1)]),
+    ('承傷', ('totalDamageTaken', 'damageSelfMitigated'), [(0.30, 2), (0.24, 1)]),
+    ('控制', ('timeCCingOthers',), [(0.30, 2), (0.22, 1)]),
+]
+
+
+def _role_part(me: dict, team: list[dict]) -> tuple[str, int]:
+    """傷害 / 承傷 / 控制 三項取分數最高的；同分取比例最高的那項來顯示。"""
+    best = None
+    for name, keys, steps in ROLE_SHARES:
+        total = sum(p.get(k, 0) or 0 for p in team for k in keys)
+        share = sum(me.get(k, 0) or 0 for k in keys) / total if total else 0
+        cand = (_tier(share, steps), share, name)
+        if best is None or cand[:2] > best[:2]:
+            best = cand
+    pts, share, name = best
+    return f'{name}佔比 {share:.0%}', pts
+
+
 def lol_score(match: dict, puuid: str, champ_names: Optional[dict] = None) -> Optional[dict]:
     """Riot match-v5 → 表現分。找不到這位玩家回 None；重開、自訂回 skip。
 
-    一般模式：勝利 +2；KDA((K+A)/D) ≥6 +3、≥4 +2、≥2.5 +1；參團率 ≥70% +2、≥55% +1；傷害佔全隊 ≥28% +2、≥22% +1。
+    一般模式：勝利 +2；KDA((K+A)/D) ≥6 +3、≥4 +2、≥2.5 +1；參團率 ≥70% +2、≥55% +1；
+    團隊貢獻(最多 +2)：傷害 / 承傷 / 控制佔全隊比例，三項取分數最高的一項(坦克不用拚傷害)，門檻見 ROLE_SHARES。
     (加總超過 8 就算 8)
     競技場：看名次。
     """
@@ -91,17 +113,15 @@ def lol_score(match: dict, puuid: str, champ_names: Optional[dict] = None) -> Op
         return _finish([(f'第 {place} 名', _place_score(place))], **base)
     team = [p for p in ps if p.get('teamId') == me.get('teamId')]
     team_k = sum(p.get('kills', 0) for p in team)
-    team_dmg = sum(p.get('totalDamageDealtToChampions', 0) for p in team)
     kda = (k + a) / max(1, d)
     kp = (k + a) / team_k if team_k else 0
-    share = me.get('totalDamageDealtToChampions', 0) / team_dmg if team_dmg else 0
     parts = []
     if me.get('win'):
         parts.append(('勝利', 2))
     parts.append((f'KDA {kda:.1f}', _tier(kda, [(6, 3), (4, 2), (2.5, 1)])))
     # 參團分兩段：輔助 KDA、傷害通常不高，靠參團拿分
     parts.append((f'參團 {kp:.0%}', _tier(kp, [(0.7, 2), (0.55, 1)])))
-    parts.append((f'傷害佔比 {share:.0%}', _tier(share, [(0.28, 2), (0.22, 1)])))
+    parts.append(_role_part(me, team))
     return _finish(parts, **base)
 
 
@@ -130,6 +150,8 @@ def lcu_to_v5(game: dict) -> Optional[dict]:
                    'championId': p.get('championId'), 'kills': st.get('kills', 0), 'deaths': st.get('deaths', 0),
                    'assists': st.get('assists', 0), 'win': bool(st.get('win')),
                    'totalDamageDealtToChampions': st.get('totalDamageDealtToChampions', 0),
+                   'totalDamageTaken': st.get('totalDamageTaken', 0), 'damageSelfMitigated': st.get('damageSelfMitigated', 0),
+                   'timeCCingOthers': st.get('timeCCingOthers', 0),
                    'gameEndedInEarlySurrender': bool(st.get('gameEndedInEarlySurrender')),
                    'placement': st.get('subteamPlacement')})
     if not ps:

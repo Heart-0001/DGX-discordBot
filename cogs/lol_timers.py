@@ -18,6 +18,8 @@ GRUBS_SPAWN, HERALD_SPAWN = 480, 900
 BARON_FIRST, BARON_RESPAWN = 1200, 360
 INHIB_RESPAWN = {SR: 300, ARAM: 250}   # 隨機單中的 250 秒是 Porofessor 實際設的值
 RELIC_RESPAWN = 90                     # 補包(Porofessor：Setting respawn for Relic Health in 90000ms)
+# Porofessor 的 jungle_camp 編號 → 面板上的補包號碼(使用者對過遊戲裡的位置：1、2 號營地要對調)
+RELIC_NO = {0: 1, 1: 3, 2: 2, 3: 4}
 CHAT_KEEP = 40
 
 DRAGON_ZH = {'Fire': '炎龍', 'Earth': '山龍', 'Water': '海龍', 'Air': '風龍', 'Chemtech': '煉金龍',
@@ -103,9 +105,9 @@ def objective_timers(d: dict, feed: Optional['PoroFeed'] = None) -> list[dict]:
               'ally' if owner == mine else 'enemy')
 
     if feed:
-        for idx, r in sorted(feed.relics.items()):
+        for idx, r in sorted(feed.relics.items(), key=lambda x: RELIC_NO.get(x[0], x[0] + 1)):
             at = r['t'] if r['alive'] else r['t'] + RELIC_RESPAWN
-            timer(f'relic:{idx}', f'補包 {idx + 1}', at)
+            timer(f'relic:{idx}', f'補包 {RELIC_NO.get(idx, idx + 1)}', at)
     return out
 
 

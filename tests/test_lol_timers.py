@@ -121,6 +121,15 @@ class TestPoroFeed(unittest.TestCase):
         self.assertTrue(t['relic:0']['up'])
         self.assertEqual(t['relic:0']['label'], '補包 1')
 
+    def test_relic_numbers_follow_map(self):
+        # 營地 1、2 在遊戲裡的位置是反的：營地 1 = 補包 3、營地 2 = 補包 2，面板照號碼排
+        f = PoroFeed('20261018000000000')
+        f.feed_text(''.join(f'2026101800252{i}000\tJ\t1:45\t{{"jungle_camps":{{"jungle_camp_{i}":"{{\\"name\\":\\"Relic Health\\",\\"alive\\":true}}"}}}}\n'
+                            for i in range(4)))
+        labels = [t['label'] for t in objective_timers(game(120, mp=12), f) if t['key'].startswith('relic:')]
+        self.assertEqual(labels, ['補包 1', '補包 2', '補包 3', '補包 4'])
+        self.assertEqual(by_key(objective_timers(game(120, mp=12), f))['relic:1']['label'], '補包 3')
+
     def test_incremental_same_ms(self):
         a = '20261018003803756\tC\t00:30 Heart (科加斯): 一'
         b = '20261018003803756\tC\t00:30 Heart (科加斯): 二'

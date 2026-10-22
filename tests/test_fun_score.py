@@ -61,6 +61,24 @@ def test_lol_middle_breakdown():
     assert parts_text(r['parts']) == '勝利 +2・KDA 5.0 +2・傷害佔比 25% +1'
 
 
+def test_lol_tank_scores_on_damage_taken_or_cc():
+    # 2026-10-22 那場雷珂煞：傷害 18% 拿不到分，但承傷 54%、控制 34% → 貢獻 +2(三項取最高，不疊加)
+    me = {'win': True, 'kills': 19, 'deaths': 8, 'assists': 32, 'totalDamageDealtToChampions': 44892,
+          'totalDamageTaken': 110900, 'damageSelfMitigated': 154389, 'timeCCingOthers': 64}
+    mates = [{'kills': k, 'totalDamageDealtToChampions': dm, 'totalDamageTaken': tk, 'damageSelfMitigated': mt,
+              'timeCCingOthers': cc}
+             for k, dm, tk, mt, cc in [(12, 49917, 30152, 15177, 9), (7, 37822, 32288, 35878, 46),
+                                        (21, 82547, 34210, 22942, 13), (5, 31572, 38093, 17816, 56)]]
+    r = lol_score(_lol(me, mates=mates), 'ME')
+    assert ('承傷佔比 54%', 2) in r['parts']
+    assert len(r['parts']) == 4   # 勝利、KDA、參團、貢獻(只有一項)
+    # 只有控制突出時顯示控制
+    mates = [{'kills': 5, 'totalDamageDealtToChampions': 20000, 'totalDamageTaken': 30000, 'timeCCingOthers': 10}] * 4
+    me = {'kills': 1, 'deaths': 5, 'assists': 5, 'totalDamageDealtToChampions': 10000, 'totalDamageTaken': 20000,
+          'timeCCingOthers': 30}
+    assert ('控制佔比 43%', 2) in lol_score(_lol(me, mates=mates), 'ME')['parts']
+
+
 def test_lol_remake_and_custom_skipped():
     assert lol_score(_lol({'win': True}, dur=200), 'ME')['skip']
     assert lol_score(_lol({'win': True, 'gameEndedInEarlySurrender': True}), 'ME')['skip']

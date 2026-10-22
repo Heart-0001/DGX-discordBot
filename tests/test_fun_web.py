@@ -325,6 +325,19 @@ def test_lcu_grants_mayhem_to_everyone_linked_in_the_game(env):
     assert len(grants) == 1 and grants[0]['data']['queue'] == '隨機單中：大混戰'
 
 
+def test_lcu_asks_full_range_but_only_checks_newest(env):
+    # 只查 0–5 場會讓客戶端之後給自己的近期戰績也只剩 6 場 → 跟玩家資料一樣查 100 場，只看最新幾場
+    bot, web = env
+    fun = bot.cogs['FunCog']
+    _link(bot, UID, 'Heart', since=0)
+    games = [_game(100 + i, 20_000_000 + i * 3_000_000, PLAYERS) for i in range(20)]
+    pc = FakePc(games, {g['gameId']: g for g in games})
+    bot.cogs['LolCog'].pc = pc
+    asyncio.run(fun._check_lcu())
+    assert 'endIndex=99' in pc.calls[0]
+    assert sorted(fun.data['lcu_seen']) == [str(100 + i) for i in range(20 - cogs.fun.LCU_RECENT - 1, 20)]
+
+
 def test_lcu_offline_or_detail_missing_retries_later(env):
     bot, web = env
     fun = bot.cogs['FunCog']

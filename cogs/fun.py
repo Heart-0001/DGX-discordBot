@@ -36,6 +36,8 @@ LOL_ROUND = 60            # 秒：每個 LoL 帳號大約多久查一次
 VALO_GAP = 20             # 秒：兩次 HenrikDev 查詢至少隔多久(額度 30/分鐘，valo-track 也在用)
 LCU_EVERY = 60            # 秒：PC 客戶端對戰紀錄多久看一次(補 API 查不到的大混戰)
 LCU_RECENT = 5            # 每次看最近幾場
+# 跟 LolCog 查玩家資料用同一個範圍：客戶端會沿用上一次查自己的範圍，只查 0–5 會讓 Activity 上自己的近期戰績只剩 6 場
+LCU_RANGE = 100
 LCU_BURST = 90            # 秒：對局一結束就連續看這麼久(打完馬上關客戶端也抓得到)
 LCU_BURST_GAP = 5         # 秒：連續看的間隔(對戰紀錄比結算畫面晚幾秒才有)
 SEEN_KEEP = 40            # 每個帳號記住最近幾場處理過的 gameId(API 和客戶端兩條路去重)
@@ -448,8 +450,9 @@ class FunCog(commands.Cog):
         if not pc:
             return 0
         h = await pc.lcu(f'/lol-match-history/v1/products/lol/current-summoner/matches'
-                         f'?begIndex=0&endIndex={LCU_RECENT}', timeout=20)
+                         f'?begIndex=0&endIndex={LCU_RANGE - 1}', timeout=20)
         games = ((h or {}).get('games') or {}).get('games') or []
+        games = sorted(games, key=lambda g: -(g.get('gameCreation') or 0))[:LCU_RECENT + 1]
         seen = self.data['lcu_seen']
         new = sorted((g for g in games if g.get('gameId') and str(g['gameId']) not in seen),
                      key=lambda g: g.get('gameCreation') or 0)

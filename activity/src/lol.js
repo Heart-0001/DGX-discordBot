@@ -265,12 +265,11 @@ function timersHtml(L) {
   return `<div class="objbar">${chips}</div>`;
 }
 
-// 聊天室(Porofessor 的 Overwolf log)：英雄名對到這場的玩家 → 我方藍、敵方紅
+// 聊天室(Porofessor 的 Overwolf log)：英雄名對到這場的玩家 → 我方藍、敵方紅；跟遊戲裡一樣舊的在上、新的在下
 function chatHtml(L) {
   const side = {};
   for (const p of L.players) if (p.champ?.name) side[p.champ.name] = p.ally ? 'al' : 'en';
-  const msgs = (L.chat || []).slice().reverse();
-  const rows = msgs.map((c) => (c.sys
+  const rows = (L.chat || []).map((c) => (c.sys
     ? `<li class="cm sys"><time>${mmss(c.t)}</time><span>${esc(c.text)}</span></li>`
     : `<li class="cm"><time>${mmss(c.t)}</time><span><b class="${side[c.champ] || ''}">${esc(c.who)}</b><small>(${esc(c.champ)})</small>：${esc(c.text)}</span></li>`)).join('');
   return `<section class="chat"><div class="team-h"><span>聊天室</span><small>Porofessor</small></div>
@@ -368,13 +367,18 @@ function render() {
   else html = viewIdle();
   if (html === lastKey) return;
   lastKey = html;
-  // 保留事件列表的捲動位置
+  // 保留事件列表的捲動位置；聊天室原本貼在最底(或剛出現)就繼續貼底，往上翻舊訊息時不拉回去
   const feed = root.querySelector('.feed ul');
   const scroll = feed ? feed.scrollTop : 0;
+  const chat = root.querySelector('.chat ul');
+  const chatTop = chat ? chat.scrollTop : 0;
+  const chatEnd = !chat || chat.scrollHeight - chat.scrollTop - chat.clientHeight < 24;
   root.className = `v-${view}`;
   root.innerHTML = html;
   const feed2 = root.querySelector('.feed ul');
   if (feed2) feed2.scrollTop = scroll;
+  const chat2 = root.querySelector('.chat ul');
+  if (chat2) chat2.scrollTop = chatEnd ? chat2.scrollHeight : chatTop;
   tick();
 }
 

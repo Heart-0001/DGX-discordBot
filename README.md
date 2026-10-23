@@ -1,6 +1,6 @@
 # 🎮 DGX Discord Bot
 
-個人多功能 Discord Bot，整合 **音樂播放**（含 Apple Music 風格的**同步歌詞**畫面）、**LoL / Valorant 即時對戰資訊**畫面、**Valorant 戰績**查詢與追蹤、**大老二** 與 **UNO** 兩款多人卡牌遊戲，全部以 slash command 操作。
+個人多功能 Discord Bot，整合 **音樂播放**（含 Apple Music 風格的**同步歌詞**畫面）、**LoL / Valorant 即時對戰資訊**畫面、**Valorant 戰績**查詢與追蹤、**大老二** 與 **UNO** 兩款多人卡牌遊戲，以及**打遊戲換券的活動**（轉蛋、釣魚、小遊戲、樂透、大富翁）。功能大多以 slash command 操作，活動則全部在 Activity 的面板裡點。
 
 ---
 
@@ -29,6 +29,8 @@
 - Activity 的 LoL 畫面（`/act`）跟著玩家的客戶端自動切換：
   - **選角**：隊友的牌位（含本季完整勝敗）、英雄熟練度、近期勝率（客戶端上限 100 場）、**最近 10 場**對局
   - **遊戲中**：雙方計分板（KDA、裝備、裝備總價推算的經濟）、雙方總經濟與差距、即時事件、自己的血量/魔力
+  - **計時列**：小龍、巢蟲、先鋒、巴龍、兵營重生（Live Client API 的擊殺事件推算），大混戰的 4 個補包（讀 PC 上 Porofessor 的 Overwolf log）
+  - **聊天室**：遊戲內聊天（同樣來自 Porofessor log），我方藍、敵方紅，舊的在上、新的在下；停在最底時自動跟著新訊息，往上翻舊訊息時不會被拉回去
   - **我方推薦出裝**：只從該英雄 op.gg ARAM 常出清單挑，再依敵方實際裝備的物理/魔法比例、護甲/魔抗/吸血佔比把針對裝往前排；每件都附根據（選用率、勝率、觸發條件的數字）
   - **敵方下一件預測**：手上零件湊齊度為主，op.gg 常出裝決定順序
   - **結算**：輸出、承受、治療、護盾、控場時間、金錢、裝備、海克斯強化，各欄最高者標示
@@ -53,21 +55,27 @@
 
 ### 🎟️ 活動：打遊戲換券
 - **不用打指令**：全部在 Activity(`/act`)右上角的「🎮 活動」面板裡點；LoL / Valorant 結算畫面也有「🎟️ 去玩活動」按鈕
-- 面板首頁綁定自己的 LoL / Valorant 帳號（每個遊戲最多 3 個）；之後**每打完一場自動換券**（Riot API / HenrikDev，打完約 1–3 分鐘），Activity 右下角會跳出換券卡片
-- 表現分 0–8（LoL：勝負、KDA、參團率、傷害佔比；競技場看名次。Valorant：勝負、ACS、K/D、MVP；死鬥看名次）→ 1 / 2 / 3 / 4 張券
-- **打得好只會拿比較多張券，每張券在活動裡的機率完全一樣**；打得再爛也保底 1 張；每天從對局最多拿 12 張，每日簽到另送 1 張
+- 面板首頁綁定自己的 LoL / Valorant 帳號（每個遊戲最多 3 個）；之後**每打完一場自動換券**，Activity 右下角會跳出換券卡片
+  - Riot API / HenrikDev：打完約 1–3 分鐘
+  - LoL 另外看玩家 PC 客戶端的對戰紀錄（台服 API 查不到的大混戰、競技場也算）：對局一結束每 5 秒看一次、最多 90 秒，打完馬上關客戶端也抓得到；同場有綁定的人一起算，兩條路用 gameId 去重
+- 表現分 0–8（LoL：勝負、KDA、參團率、**傷害 / 承傷 / 控制取佔比最高的一項**（坦克不用拚傷害）；競技場看名次。Valorant：勝負、ACS、K/D、MVP；死鬥看名次）→ 1 / 2 / 3 / 4 張券
+- **打得好只會拿比較多張券，每張券在活動裡的機率完全一樣**；打得再爛也保底 1 張；**沒有每日上限**（大家偶爾有空才打）；每日簽到另送 1 張
+- 換券公告不會 @ 玩家（名字照顯示）
 - 券的用途（1 張券期望值約 100 代幣）：
   - 🎰 轉蛋：抽 LoL 英雄 / Valorant 特務卡（普通 60%、稀有 28%、史詩 10%、傳說 2%），收集圖鑑、賣重複
-  - 🎣 釣魚：32 種魚、伺服器最重紀錄、圖鑑
+  - 🎣 釣魚：32 種魚、背包、圖鑑、伺服器最重紀錄
   - 🃏 小遊戲：21 點、拉霸、踩地雷、猜正反面
-  - 🎫 樂透：1 張券 1 注，每週日 21:00 開獎
-  - 🎲 大富翁：每個伺服器一張長駐棋盤，14 天一季，1 張券擲 1 次骰，賽季結束依淨值發代幣
+  - 🎫 樂透：1 張券 1 注，**每天 21:00 開獎**，開獎會 @ 中獎者
+  - 🎲 大富翁：每個伺服器一張長駐棋盤（32 格，含機會、傳送門、稅、停權），14 天一季，第一個人加入時開季；1 張券擲 1 次骰，動畫照每一站演（走到的格子 → 機會卡後退 / 傳送門 → 停下）；賽季結束依淨值發代幣
 - 代幣花在 🛒 商店（稱號、個人卡片外框與背景，純外觀）；🪪 個人卡片、🏆 排行
 - 抽到傳說卡、釣到傳說魚、拉霸大獎、樂透頭獎、賽季冠軍 → 同伺服器所有開著 Activity 的人都會看到慶祝特效
 - 管理員：`/fun channel` 設定公告頻道（換券、開獎、賽季結算，附「開啟活動」按鈕）、`/lottery prize` 設定額外獎品
 
 ### 🩺 健康檢查
 - `scripts/healthcheck.sh` 每日診斷 service 狀態、重啟抖動、403 / 播放失敗、OOM、yt-dlp 版本、log 大小
+- `scripts/ytdlp_upgrade.sh` 升級 yt-dlp：升到最新版後，用 bot 實際的 yt-dlp / ffmpeg 參數抓 3 首真的歌、實際解 5 秒，**全部能播才算成功，否則自動降回原版本**，壞版本記進 `data/ytdlp_bad_versions.txt`（之後不再自動升到那版，健檢也不再報「落後」）。bot 每首歌另開 yt-dlp 子行程，換版本不用重啟
+  - 只測 `ytsearch1:lofi` 不夠：yt-dlp 2026.10.21 搜 lofi 能播，但 YouTube Music 的正式歌全部 403
+  - `--test` 只測目前版本
 - `/check` 在 Discord 查看最近一次報告
 
 ### 🃏 大老二（Big Two）
@@ -220,6 +228,15 @@ cd activity && npm install && npm run build
 | `/stock-track remove <股票>` | 取消追蹤。 |
 | `/stock-track list` | 這個伺服器追蹤中的股票。 |
 
+### 🎟️ 活動（管理員）
+玩家不用指令，活動都在 `/act` 的「🎮 活動」面板裡。以下指令預設只有管理員看得到。
+
+| 指令 | 說明 |
+|------|------|
+| `/fun channel` | 把活動公告（換券、開獎、賽季結算）發到這個頻道。 |
+| `/fun give` | （bot 擁有者）發券或代幣給某人。 |
+| `/lottery prize` | 設定本期額外獎品說明，開獎後清空。 |
+
 ### 🩺 其他
 | 指令 | 說明 |
 |------|------|
@@ -292,28 +309,51 @@ discordbot/
 │   ├── lyrics_match.py     # 歌名清理、歌手比對、LRC 解析（純函式）
 │   ├── lol.py              # /lol：輪詢玩家 PC 客戶端、op.gg 出裝、Activity 資料推送
 │   ├── lol_parse.py        # LoL 資料整理、經濟、出裝預測與推薦（純函式）
+│   ├── lol_timers.py       # LoL 計時列（野怪 / 兵營 / 補包）與聊天室
 │   ├── riot_api.py         # Riot API（牌位、熟練度、帳號查詢）
 │   ├── valo.py             # /valo、/valo-track、/valo-live（對局輪詢、Activity 資料推送）
 │   ├── lol_live_parse.py   # /lol-live：spectator-v5 對局整理
 │   ├── valo_parse.py       # Valorant 戰績整理（純函式）
 │   ├── valo_live.py        # Riot Client token → GLZ / PD 對局、牌位、對戰紀錄
 │   ├── valo_live_parse.py  # 對局 / 賽後資料整理（純函式）
+│   ├── valo_gep.py         # Valorant 進階 TAB（讀 PC 上 Overwolf GEP 的 log）
+│   ├── riot_cookie_auth.py # Valorant 小帳登入（ssid 續命）
+│   ├── act_live.py         # Activity 的 WebSocket：Discord 登入、點歌 / 控制、表情反應，活動操作也走這條
+│   ├── fun.py              # 活動：錢包、綁帳號、打完對局換券、商店、/fun 管理指令
+│   ├── fun_web.py          # 活動的 Activity 操作、圖片路由 api/fun/*、慶祝特效廣播
+│   ├── gacha.py            # 🎰 轉蛋
+│   ├── fishing.py          # 🎣 釣魚
+│   ├── minigames.py        # 🃏 21 點 / 拉霸 / 踩地雷 / 猜正反
+│   ├── lottery.py          # 🎫 樂透（每天 21:00 開獎）、/lottery 管理指令
+│   ├── mono.py             # 🎲 大富翁（賽季、棋盤圖）
 │   ├── stock.py            # /stock、/stock-track（報價抓取、開收盤通知）
 │   ├── stock_parse.py      # 股票代號解析、報價整理、開收盤時間、走勢圖（純函式）
 │   ├── health.py           # /check 健康報告
 │   ├── bigtwo.py           # 大老二
 │   └── uno.py              # UNO
-├── activity/               # Discord Activity 前端（同步歌詞 + LoL + Valorant 畫面）
-│   ├── src/                # 原始碼（main.js 歌詞與模式切換 / lol.js / valo.js / style.css / index.html）
+├── activity/               # Discord Activity 前端（同步歌詞 + LoL + Valorant 畫面 + 活動面板）
+│   ├── src/                # 原始碼（main.js 歌詞與模式切換 / lol.js / valo.js / live.js 連線 / fun.js 活動面板 / style.css / index.html）
+│   │                       #   fun_mock.js：假後端，網址加 ?mock=1 可在一般瀏覽器測活動面板（&mono=empty = 大富翁還沒開季）
 │   └── dist/               # build 結果，bot 直接提供
 ├── scripts/
-│   └── healthcheck.sh      # 每日健檢（只診斷不修復）
+│   ├── healthcheck.sh      # 每日健檢（只診斷不修復）
+│   ├── ytdlp_upgrade.sh    # 升級 yt-dlp → 用真的歌實測 → 不能播就自動降回
+│   └── import_alt_cookie.py # （不建議）從 PC 的 Riot Client 匯入小帳 cookie
 ├── games/
 │   ├── bigtwo_logic.py     # 大老二規則邏輯
 │   ├── uno_logic.py        # UNO 規則邏輯
 │   ├── card_image.py       # 大老二手牌圖片繪製
-│   └── uno_image.py        # UNO 手牌圖片繪製
-├── tests/                  # 單元測試（UNO、repeat、起播重試、歌詞比對、LoL/Valorant 解析）
+│   ├── uno_image.py        # UNO 手牌圖片繪製
+│   ├── fun_score.py        # 對局表現分 0–8 → 1–4 張券
+│   ├── fun_shop.py         # 商店品項
+│   ├── gacha_logic.py      # 轉蛋機率與卡池
+│   ├── gacha_image.py      # 轉蛋卡圖
+│   ├── fishing_logic.py    # 魚種與釣魚機率
+│   ├── minigames_logic.py  # 21 點 / 拉霸 / 踩地雷 / 猜正反規則
+│   ├── lottery_logic.py    # 樂透開獎
+│   ├── mono_logic.py       # 大富翁棋盤、擲骰、機會卡、賽季結算
+│   └── mono_image.py       # 大富翁棋盤圖
+├── tests/                  # 單元測試（UNO、repeat、起播重試、歌詞比對、LoL/Valorant 解析、計時列、各活動與換券評分）
 ├── data/                   # 執行時遊戲統計、健檢報告、LoL 快取（不納入版控）
 ├── requirements.txt        # Python 依賴套件
 ├── .env.example            # 環境變數範本
@@ -339,6 +379,7 @@ pytest tests/
 - 網易雲 / QQ 音樂 / 酷狗為非官方 API，可能隨時失效；失效時會自動略過。
 - **LoL 為什麼讀 PC 客戶端而不是 Riot API**：實測台服（tw2）的公開 API 資料很殘缺，近期對局、牌位常拿不到，所以即時資料都以玩家 PC 的客戶端為準，Riot API 只用來補牌位、熟練度與查人。
 - LoL 客戶端對戰紀錄**最多只給最近 100 場**，所以近期勝率最多看 100 場；積分模式另外顯示本季完整勝敗。
+- 客戶端會記住上一次查「自己」對戰紀錄的範圍，所以 bot 查完 100 場後，**玩家自己客戶端的對戰紀錄頁也會列出 100 場**（上面的標題還是寫近 20 場）。只影響那台 PC 的顯示，不影響戰績，也不影響其他人。
 - 遊戲中查其他玩家的資料，客戶端要向伺服器拿，常要十幾到二十幾秒；查不到會每 30 秒自動重試。
 - 出裝統計來自 op.gg 的 **ARAM** 數據（沒有大混戰專屬統計），每隻英雄快取 12 小時。推薦出裝的觸發門檻（例如敵方吸血裝佔 10%）是自訂的，畫面上會附實際數字讓人自己判斷。
 - 遊戲中的 Live Client API **拿不到海克斯強化**，只有結算畫面看得到；其他玩家的金錢也拿不到，經濟是用裝備合成總價推算。

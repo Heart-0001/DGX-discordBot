@@ -86,7 +86,11 @@ latest=$($VENV/pip index versions yt-dlp 2>/dev/null | awk -F'LATEST:' '/LATEST/
 note "[yt-dlp] 目前=$cur  最新=${latest:-查詢失敗}"
 norm() { echo "$1" | awk -F. '{for(i=1;i<=NF;i++){printf "%d%s", $i+0, (i<NF?".":"")}}'; }
 if [ -n "$latest" ] && [ "$(norm "$cur")" != "$(norm "$latest")" ]; then
-  bad "PROBLEM yt_dlp_outdated: yt-dlp 落後（$cur → $latest）"
+  if grep -qx "$(norm "$latest")" $DIR/data/ytdlp_bad_versions.txt 2>/dev/null; then
+    note "[yt-dlp] 註：最新版 $latest 先前實測不能播（scripts/ytdlp_upgrade.sh 已降版），維持 $cur — 不算問題"
+  else
+    bad "PROBLEM yt_dlp_outdated: yt-dlp 落後（$cur → $latest）"
+  fi
 fi
 
 # ── 7. 依賴與磁碟 ──

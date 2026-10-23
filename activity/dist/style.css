@@ -484,6 +484,8 @@ html.pip #lol .predict { display: none; }
 #lol .chat .team-h { color: var(--gold); background: linear-gradient(90deg, rgba(200, 170, 110, .22), transparent); }
 #lol .chat .team-h small { letter-spacing: 0; font-weight: 400; color: var(--mut); }
 #lol .chat ul { list-style: none; flex: 1; min-height: 0; overflow-y: auto; padding: 4px 8px; display: flex; flex-direction: column; gap: 2px; scrollbar-width: none; }
+/* 左下角的「活動」按鈕浮在聊天室上：底部留空，最新一則才不會被蓋住 */
+html.mode-lol #lol .chat ul { padding-bottom: 34px; }
 #lol .cm { display: flex; gap: 6px; font-size: .92em; line-height: 1.35; }
 #lol .cm time { flex: none; color: var(--mut); font-variant-numeric: tabular-nums; }
 #lol .cm b { font-weight: 700; }
@@ -916,8 +918,6 @@ html.pip #fun-fab, html.pip #funpanel, html.pip #fun-card, html.pip #fun-banner,
 .f-stat { padding: 10px 12px; border-radius: 14px; background: var(--card); display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .f-stat b { font-size: 18px; font-variant-numeric: tabular-nums; }
 .f-stat b small { display: block; font-weight: 400; }
-.f-bar { display: block; height: 6px; border-radius: 3px; background: rgba(255, 255, 255, .12); overflow: hidden; }
-.f-bar u { display: block; height: 100%; background: linear-gradient(90deg, #ffd24d, #ff9f43); transition: width .5s; }
 .f-list { list-style: none; display: flex; flex-direction: column; gap: 5px; }
 .f-list li { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 8px 12px; border-radius: 12px; background: var(--card); font-size: 14px; }
 .f-list li.clk { cursor: pointer; }

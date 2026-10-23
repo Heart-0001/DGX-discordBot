@@ -78,7 +78,7 @@ const lotView = () => ({ period: lot.period, pot: lot.pot, bets: lot.bets, playe
 // ── 大富翁 ──
 const COLORS = ['#e0443e', '#e8863a', '#e8c53a', '#5fb85f', '#3aa6c4', '#4a6ee0', '#a35fd0'];
 const PN = '峽谷 河道 野區 龍坑 男爵 高地 水晶 虛空 星界 雙城 祖安 皮城 艾歐 諾克 德瑪 弗雷 班德 恕瑞 暗影 符文 海克 水路 影島 熔爐'.split(' ');
-const SPECIAL = { 0: ['起點', 'go'], 8: ['停權區', 'jail'], 16: ['免費停車', 'free'], 24: ['進停權區', 'gotojail'], 4: ['機會', 'chance'], 12: ['機會', 'chance'], 20: ['機會', 'chance'], 28: ['機會', 'chance'], 6: ['所得稅', 'tax'], 18: ['傳送門', 'portal'] };
+const SPECIAL = { 0: ['起點', 'go'], 8: ['停權區', 'jail'], 16: ['免費停車', 'free'], 24: ['進停權區', 'gotojail'], 4: ['機會', 'chance'], 12: ['機會', 'chance'], 20: ['機會', 'chance'], 28: ['機會', 'chance'], 6: ['所得稅', 'tax'], 10: ['傳送門', 'portal'], 19: ['傳送門', 'portal'] };
 const BOARD = Array.from({ length: 32 }, (_, i) => {
   const base = { i, name: '', kind: 'prop', color: null, price: 0, rent: 0, owner: null, owner_color: null, level: 0 };
   if (SPECIAL[i]) return { ...base, name: SPECIAL[i][0], kind: SPECIAL[i][1] };
@@ -88,7 +88,13 @@ const BOARD = Array.from({ length: 32 }, (_, i) => {
 const bots = [{ uid: 'b1', name: '小明', pos: 3, cash: 900, color: '#ff6b6b', initial: '明' }, { uid: 'b2', name: '阿花', pos: 11, cash: 1200, color: '#4dd0e1', initial: '花' },
   { uid: 'b3', name: 'Tom', pos: 20, cash: 700, color: '#ffd24d', initial: 'T' }];
 const mono = { joined: false, me: { uid: 'me', cash: 1500, pos: 0, jail: false, rolled: 0 }, pending: null, level: {} };
+// ?mono=empty：模擬還沒人加入過(真後端 season 是 null、沒人沒地)
+const monoEmpty = new URLSearchParams(location.search).get('mono') === 'empty';
 const monoView = () => {
+  if (monoEmpty && !mono.joined) {
+    return { joined: false, season: null, board: BOARD.map((t) => ({ ...t, owner: null, owner_color: null, level: 0 })), players: [],
+      me: null, pending: null, standings: [], champions: [], board_png: '' };
+  }
   const players = [...(mono.joined ? [{ uid: 'me', name: '測試員', pos: mono.me.pos, cash: mono.me.cash, nw: 0, jail: mono.me.jail, color: '#7c9cff', initial: '我' }] : []), ...bots]
     .map((p) => ({ ...p, nw: p.cash + BOARD.filter((t) => t.owner === p.name).reduce((a, t) => a + t.price, 0) }));
   const standings = [...players].sort((a, b) => b.nw - a.nw).map((p) => ({ uid: p.uid, name: p.name, nw: p.nw }));
@@ -250,8 +256,19 @@ export async function mockFun(op, a = {}) {
       const from = mono.me.pos, to = (from + dice[0] + dice[1]) % BOARD.length, events = [];
       mono.me.pos = to;
       if (to < from) { mono.me.cash += 200; events.push('經過起點，領 $200'); }
-      const t = BOARD[to];
+      let t = BOARD[to];
+      const stops = [to];
       events.push(`走到「${t.name}」`);
+      if (t.kind === 'chance' && new URLSearchParams(location.search).get('mono') === 'empty') {   // 測試用：機會一律後退 3
+        mono.me.pos = (to - 3 + BOARD.length) % BOARD.length; t = BOARD[mono.me.pos]; stops.push(mono.me.pos);
+        events.push('🎴 被 gank 了，後退 3 格');
+      }
+      if (t.kind === 'portal') {
+        const ps = BOARD.filter((x) => x.kind === 'portal').map((x) => x.i);
+        mono.me.pos = ps.find((i) => i > mono.me.pos) ?? ps[0]; stops.push(mono.me.pos);
+        t = BOARD[mono.me.pos];
+        events.push('🌀 穿過傳送門，被傳到另一個傳送門');
+      }
       if (t.kind === 'prop') {
         if (!t.owner) { mono.pending = { type: 'buy', tile: to, cost: t.price, name: t.name }; events.push(`沒有地主，可以花 $${t.price} 買下`); }
         else if (t.owner === '測試員') { if (t.level < 3) { mono.pending = { type: 'up', tile: to, cost: Math.round(t.price / 2), name: t.name }; events.push('這是你的地，可以升級'); } }
@@ -260,7 +277,7 @@ export async function mockFun(op, a = {}) {
       else if (t.kind === 'gotojail' || t.kind === 'jail') { mono.me.jail = true; events.push('被關進停權區'); }
       else if (t.kind === 'chance') { const g = (rnd(5) - 1) * 50; mono.me.cash += g; events.push(g >= 0 ? `機會：撿到 $${g}` : `機會：罰款 $${-g}`); }
       mono.me.rolled++;
-      return { ...monoView(), roll: { dice, from, to, events }, wallet: wallet() };
+      return { ...monoView(), roll: { dice, from, stops, to: mono.me.pos, events }, wallet: wallet() };
     }
     case 'mono_decide': {
       const p = mono.pending;

@@ -216,6 +216,7 @@ def _send_jail(p: dict, events: list):
 
 def _land(season: dict, uid: int, events: list, rng: random.Random, now: float, depth: int, card=None):
     p = season['players'][str(uid)]
+    p.setdefault('_stops', []).append(p['pos'])          # 給 roll() 回傳每個停點(網頁照順序演)
     t = TILES[p['pos']]
     kind = t['type']
     events.append(f"📍 停在 **{t['name']}**")
@@ -227,7 +228,7 @@ def _land(season: dict, uid: int, events: list, rng: random.Random, now: float, 
     elif kind == 'portal':
         nxt = next((x for x in PORTALS if x > p['pos']), PORTALS[0])
         p['pos'] = nxt
-        events.append(f'🌀 傳送到下一個傳送門（第 {nxt} 格）')
+        events.append(f"🌀 穿過傳送門，被傳到另一個傳送門（{TILES[nxt - 1]['name']} 旁）")
     elif kind == 'chance':
         if depth >= 2:
             events.append('（連續機會，這次不再抽）')
@@ -296,7 +297,8 @@ def _draw_card(season, uid, events, rng, now, depth, card=None):
 # ── 擲骰 ──
 def roll(season: dict, uid: int, rng: random.Random, now: float, dice=None, card: Optional[int] = None) -> dict:
     """扣券之後呼叫：擲 2d6 並處理一回合。dice / card 可注入(測試用)。
-    回傳 {'dice': (a,b), 'from', 'to', 'events': [...], 'pending': dict|None, 'jail': bool}"""
+    回傳 {'dice': (a,b), 'from', 'stops', 'to', 'events': [...], 'pending': dict|None, 'jail': bool}
+    stops = 依序停過的格子：骰子走到的那格 → 機會卡移到的格子 → … → to(傳送門 / 送停權也算一站)。"""
     p = season['players'][str(uid)]
     season['seq'] += 1
     p['turn'] = season['seq']
@@ -322,7 +324,10 @@ def roll(season: dict, uid: int, rng: random.Random, now: float, dice=None, card
     if move:
         _advance(p, total, events)
         _land(season, uid, events, rng, now, 0, card)
-    return {'dice': (a, b), 'from': start, 'to': p['pos'], 'events': events,
+    stops = p.pop('_stops', [])
+    if move and stops[-1] != p['pos']:
+        stops.append(p['pos'])
+    return {'dice': (a, b), 'from': start, 'stops': stops, 'to': p['pos'], 'events': events,
             'pending': p['pending'], 'jail': p['jail'], 'turn': p['turn']}
 
 

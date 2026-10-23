@@ -155,7 +155,7 @@ class MonoCog(commands.Cog):
         self._fun().need_tickets(uid, 1)
         res = ml.roll(s, uid, self.rng, time.time())
         self.save()
-        return {**self.view(gid, uid), 'roll': {'dice': list(res['dice']), 'from': res['from'], 'to': res['to'],
+        return {**self.view(gid, uid), 'roll': {'dice': list(res['dice']), 'from': res['from'], 'stops': res['stops'], 'to': res['to'],
                                                 'events': [_plain(e) for e in res['events']]}}
 
     def decide(self, gid: int, uid: int, action: str) -> dict:

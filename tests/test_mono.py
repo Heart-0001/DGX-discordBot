@@ -145,6 +145,21 @@ def test_portal_teleports_to_next():
     assert s['players']['1']['pos'] == 10
 
 
+def test_roll_reports_every_stop():
+    s = mk()
+    r = go(s, 1, 4, (2, 4))                              # 骰子停第 10 格傳送門 → 傳到第 19 格
+    assert (r['from'], r['stops'], r['to']) == (4, [10, 19], 19)
+    r = go(s, 1, 20, (1, 2))                             # 一般格子：只有一站
+    assert r['stops'] == [23] and r['to'] == 23
+    back = next(i for i, c in enumerate(ml.CARDS) if c[0] == 'rel' and c[1] == -3)
+    r = go(s, 1, 9, (2, 2), card=back)                   # 第 13 格機會 → 後退 3 到第 10 格傳送門 → 第 19 格
+    assert r['stops'] == [13, 10, 19] and r['to'] == 19
+    s['players']['1']['jail'] = True
+    r = go(s, 1, 8, (1, 2))                              # 停權沒擲出對子：沒動
+    assert r['stops'] == [] and r['to'] == 8
+    assert '_stops' not in s['players']['1']             # 不會存進存檔
+
+
 def test_rest_and_visit_jail_nothing():
     s = mk()
     go(s, 1, 4, (2, 2))                                  # 第 8 格 探監

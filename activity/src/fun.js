@@ -584,6 +584,8 @@ setInterval(() => {
 }, 1000);
 
 // ───────── 大富翁 ─────────
+// 還沒人加入過 → 後端 season 是 null，第一個加入的人才開季
+const seasonTxt = (m) => (m.season ? `${esc(m.season.name)}・剩 ${esc(m.season.days_left)} 天` : '還沒開季・第一個加入就開打');
 function boardHtml(m) {
   const N = m.board.length;
   if (!N) return m.board_png ? `<img class="mono-png" src="${esc(m.board_png)}" alt="棋盤">` : '';
@@ -602,7 +604,7 @@ function boardHtml(m) {
   }).join('');
   const r = S.monoRoll;
   const center = `<div class="mono-center" style="grid-area:2/2/${size}/${size}"><div class="mono-dice" id="mono-dice">${r ? `${DICE[r.dice[0] - 1]} ${DICE[r.dice[1] - 1]}` : '🎲'}</div>
-    <small>${esc(m.season.name)}・剩 ${esc(m.season.days_left)} 天</small></div>`;
+    <small>${seasonTxt(m)}</small></div>`;
   return `<div class="mono-board" style="grid-template-columns:repeat(${size},1fr);grid-template-rows:repeat(${size},1fr)">${tiles}${center}</div>`;
 }
 function vMono() {
@@ -611,7 +613,7 @@ function vMono() {
   const st = `<h3>賽季排行</h3><ul class="f-list">${(m.standings || []).map((p, i) => `<li><span class="g-day">#${i + 1}</span><span class="g-who">${esc(p.name)}</span><b class="g-got">$${num(p.nw)}</b></li>`).join('') || '<li class="dim">還沒有人加入</li>'}</ul>
     ${(m.champions || []).length ? `<h3>歷屆冠軍</h3><ul class="f-list">${m.champions.map((c) => `<li><span class="g-day">${esc(c.season)}</span><span class="g-who">👑 ${esc(c.name)}</span><b class="g-got">$${num(c.nw)}</b></li>`).join('')}</ul>` : ''}`;
   if (!m.joined) {
-    return `<div class="mono-join"><div class="mono-dice">🎲</div><p>${esc(m.season.name)}・剩 ${esc(m.season.days_left)} 天</p><p class="f-hint">加入後每天擲骰、買地、收租，賽季結束時總資產最高的人拿冠軍。</p>
+    return `<div class="mono-join"><div class="mono-dice">🎲</div><p>${seasonTxt(m)}</p><p class="f-hint">加入後每天擲骰、買地、收租，賽季結束時總資產最高的人拿冠軍。</p>
       <button type="button" class="f-btn pri" data-act="mjoin">加入大富翁</button></div>${boardHtml(m)}${st}`;
   }
   const me = m.me || {}, pd = m.pending;
@@ -644,17 +646,30 @@ async function monoRollAnim() {
   S.monoRoll = d.roll;
   if (dice) dice.textContent = `${DICE[d.roll.dice[0] - 1]} ${DICE[d.roll.dice[1] - 1]}`;
   S.monoEv = d.roll.events || [];
-  // 棋子一格一格走
+  // 照 stops 依序演：第一站是骰子走到的格子(一格一格走)，之後是機會卡 / 傳送門 / 送停權移過去的
+  // (後退幾格就一格一格倒退，其他直接跳過去)
   const N = (S.mono && S.mono.board.length) || 0;
+  const hop = (i) => {
+    document.querySelectorAll('.mt.hop').forEach((e) => e.classList.remove('hop'));
+    const t = document.querySelector(`.mt[data-i="${i}"]`);
+    if (t) t.classList.add('hop');
+    blip();
+  };
   if (N) {
-    const steps = ((d.roll.to - d.roll.from) % N + N) % N;
-    for (let k = 1; k <= steps && k <= 14; k++) {
-      const i = (d.roll.from + (steps > 14 ? steps - 14 + k : k)) % N;
-      document.querySelectorAll('.mt.hop').forEach((e) => e.classList.remove('hop'));
-      const t = document.querySelector(`.mt[data-i="${i}"]`);
-      if (t) t.classList.add('hop');
-      blip();
-      await sleep(130);
+    const stops = d.roll.stops || (d.roll.to !== d.roll.from ? [d.roll.to] : []);
+    let at = d.roll.from;
+    for (const [n, dest] of stops.entries()) {
+      const fwd = ((dest - at) % N + N) % N, back = N - fwd;
+      if (n === 0) {
+        for (let k = 1; k <= fwd && k <= 14; k++) { hop((at + (fwd > 14 ? fwd - 14 + k : k)) % N); await sleep(130); }
+      } else {
+        await sleep(500);
+        if (back <= 3) {
+          for (let k = 1; k <= back; k++) { hop((at - k + N) % N); await sleep(220); }
+        } else { hop(dest); chime(1); }
+        await sleep(350);
+      }
+      at = dest;
     }
   }
   S.mono = d;

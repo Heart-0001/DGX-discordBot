@@ -17,6 +17,10 @@ let staticData = { champions: {}, augments: {}, spells: {} };
 let state = null;
 let lastKey = '';     // 上次畫的內容(JSON)，一樣就不重畫
 let clockBase = null; // {time, at}：遊戲時間本地內插
+// 聊天室要不要貼底：只看使用者自己有沒有往上捲(捲動事件)，不在重畫前量位置 —
+// 圖示晚載入讓版面變動時聊天室會離底一段，用量的會誤判成「使用者往上翻」，之後就不再跟新訊息
+let chatStick = true;
+let chatRO = null;
 const badImg = new Set();   // 404 過的圖，之後直接畫替代文字，避免每次重畫都閃一下
 
 // ── 小工具 ──
@@ -367,18 +371,27 @@ function render() {
   else html = viewIdle();
   if (html === lastKey) return;
   lastKey = html;
-  // 保留事件列表的捲動位置；聊天室原本貼在最底(或剛出現)就繼續貼底，往上翻舊訊息時不拉回去
+  // 保留事件列表的捲動位置；聊天室貼底就繼續貼底(版面變動也重新貼)，往上翻舊訊息時不拉回去
   const feed = root.querySelector('.feed ul');
   const scroll = feed ? feed.scrollTop : 0;
   const chat = root.querySelector('.chat ul');
   const chatTop = chat ? chat.scrollTop : 0;
-  const chatEnd = !chat || chat.scrollHeight - chat.scrollTop - chat.clientHeight < 24;
   root.className = `v-${view}`;
   root.innerHTML = html;
   const feed2 = root.querySelector('.feed ul');
   if (feed2) feed2.scrollTop = scroll;
   const chat2 = root.querySelector('.chat ul');
-  if (chat2) chat2.scrollTop = chatEnd ? chat2.scrollHeight : chatTop;
+  if (chatRO) chatRO.disconnect();
+  if (chat2) {
+    chat2.scrollTop = chatStick ? chat2.scrollHeight : chatTop;
+    chatLastTop = chat2.scrollTop;
+    chatRO = new ResizeObserver(() => {
+      if (!chatStick) return;
+      chat2.scrollTop = chat2.scrollHeight;
+      chatLastTop = chat2.scrollTop;
+    });
+    chatRO.observe(chat2);
+  } else chatStick = true;   // 不在對局畫面 → 下一場重新從貼底開始
   tick();
 }
 
@@ -438,6 +451,17 @@ function showMsg(text) {
   root.innerHTML = `<div class="lol-idle"><div class="lol-logo">⚔</div><div class="lol-idle-text">${esc(text)}</div></div>`;
 }
 
+// scroll 不會冒泡，掛在 root 用 capture 接。只有 scrollTop 變小(真的往上捲)才取消貼底、捲回底部才恢復；
+// 程式自己貼底的捲動事件可能在版面變動之後才送到，那時量起來離底一段，不能當成使用者往上翻
+let chatLastTop = 0;
+function onChatScroll(e) {
+  const u = e.target;
+  if (!u.matches?.('.chat ul')) return;
+  if (u.scrollHeight - u.scrollTop - u.clientHeight < 24) chatStick = true;
+  else if (u.scrollTop < chatLastTop - 2) chatStick = false;
+  chatLastTop = u.scrollTop;
+}
+
 function onImgError(e) {
   const t = e.target;
   if (t.tagName !== 'IMG') return;
@@ -453,6 +477,7 @@ export function startLol(el) {
   root = el;
   root.hidden = false;
   root.addEventListener('error', onImgError, true);
+  root.addEventListener('scroll', onChatScroll, true);
   // 先連線再畫舊畫面：舊資料畫壞了(丟例外)也不會讓這次切換連不上、整個卡住
   connect();
   tickT = setInterval(tick, 250);
@@ -473,6 +498,7 @@ export function stopLol() {
   if (sock) sock.close();
   if (root) {
     root.removeEventListener('error', onImgError, true);
+    root.removeEventListener('scroll', onChatScroll, true);
     root.hidden = true;
   }
 }

@@ -405,8 +405,9 @@ async function doCast(n) {
     const top = d.catches.find((c) => c.rarity === 'legend') || d.catches.find((c) => c.record);
     if (top) { burstAt(stage, { n: 80, gold: true }); chime(2); }
   } finally { holdCel(false); }
-  S.fish.bag = null;
-  if (S.fish.sub === 'bag') loadFish();
+  // 甩完竿背包、圖鑑、紀錄都可能變 → 都作廢，現在這頁馬上重抓(其他頁切過去時會抓)
+  S.fish.bag = S.fish.dex = S.fish.rec = null;
+  loadFish();
 }
 
 // ───────── 小遊戲 ─────────
@@ -771,7 +772,7 @@ const ACT = {
     if (d) { ftoast(`賣掉 ${(d.sold || []).reduce((a, x) => a + x.count, 0)} 張重複卡，+${num(d.total)} 🪙`); loadDex(); }
   },
   cast: (d) => doCast(+d.n),
-  fishsub(d) { S.fish.sub = d.v; S.fish[d.v] = null; render(); },
+  async fishsub(d) { S.fish.sub = d.v; S.fish[d.v] = null; render(); await loadFish(); },
   async fsell() {
     const d = await call('fish_sell');
     if (d) { ftoast(`賣出 ${d.count} 條，+${num(d.total)} 🪙`); S.fish.bag = null; loadFish(); }

@@ -225,6 +225,9 @@ function advTeam(t) {
     ${head}${rows.map((p) => advRow(p, board[p.puuid])).join('')}</div>`;
 }
 
+// 每回合擊殺的人頭圖示
+const SKULL = '<svg class="sk" viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 1C4.1 1 1.5 3.6 1.5 7c0 2 .9 3.4 2.3 4.2V13a1 1 0 0 0 1 1h1v-1.6h1.2V14h2v-1.6h1.2V14h1a1 1 0 0 0 1-1v-1.8c1.4-.8 2.3-2.2 2.3-4.2C14.5 3.6 11.9 1 8 1Zm-2.6 8.6a1.6 1.6 0 1 1 0-3.2 1.6 1.6 0 0 1 0 3.2Zm5.2 0a1.6 1.6 0 1 1 0-3.2 1.6 1.6 0 0 1 0 3.2Z"/></svg>';
+
 // 頭 / 身 / 腿：小人圖，顏色越深命中比例越高
 function bodySvg(t) {
   const c = (v) => `rgba(255, 70, 85, ${(0.12 + 0.88 * (v || 0) / 100).toFixed(2)})`;
@@ -243,8 +246,10 @@ function advMine() {
   const pct = (v) => (v == null ? '—' : `${v}%`);
   const tile = (label, val, sub = '', cls = '') => `<div class="tile ${cls}"><small>${label}</small><b>${val}</b>${sub ? `<small>${sub}</small>` : ''}</div>`;
   const max = Math.max(1, ...g.rounds.map((r) => r.dmg));
-  const bars = g.rounds.map((r) => `<span class="rb" title="${esc(`R${r.n}　傷害 ${r.dmg}　命中 ${r.hit}（頭 ${r.hs}・身 ${r.bs}・腿 ${r.ls}）　受到 ${r.recv}${r.abil ? `　技能 ${r.abil}` : ''}`)}">
-      <i style="height:${Math.round(r.dmg * 100 / max)}%"></i><em>${r.dmg || ''}</em><small>${r.n}</small></span>`).join('');
+  // 像 tracker：柱子上面標傷害，下面一殺一顆人頭(3 殺以上亮金色)
+  const bars = g.rounds.map((r) => `<span class="rb" title="${esc(`R${r.n}　${r.k || 0} 殺　傷害 ${r.dmg}　命中 ${r.hit}（頭 ${r.hs}・身 ${r.bs}・腿 ${r.ls}）　受到 ${r.recv}${r.abil ? `　技能 ${r.abil}` : ''}`)}">
+      <span class="rbc"><em>${r.dmg || ''}</em><i style="height:${Math.round(r.dmg * 85 / max)}%"></i></span>
+      <span class="rk${r.k >= 3 ? ' hot' : ''}">${SKULL.repeat(r.k || 0)}</span><small>${r.n}</small></span>`).join('');
   return `<div class="adv-me">
     <div class="am-fig">${bodySvg(t)}<div class="am-parts">
       <span><b>頭</b> ${pct(t.hsp)}<small>${t.hs}</small></span><span><b>身</b> ${pct(t.bsp)}<small>${t.bs}</small></span><span><b>腿</b> ${pct(t.lsp)}<small>${t.ls}</small></span></div></div>
@@ -255,7 +260,7 @@ function advMine() {
       ${tile('受到傷害', num(t.recv), `每回合 ${Math.round(t.recv / t.rounds)}`)}
       ${t.abil ? tile('技能傷害', num(t.abil)) : ''}
     </div>
-    <div class="am-rounds"><div class="am-h">每回合傷害 <small>滑過看命中</small></div><div class="rbars">${bars}</div></div>
+    <div class="am-rounds"><div class="am-h">每回合 <small>上：傷害　💀 = 擊殺　滑過看命中</small></div><div class="rbars">${bars}</div></div>
   </div>`;
 }
 
@@ -304,7 +309,7 @@ function viewAdv() {
     <div class="lol-body live-body v-adv">
       <div class="adv-tab">${m.teams.map(advTeam).join('')}</div>
       <div class="adv-mid">${advMine()}${advFeed()}</div>
-      <div class="adv-rank"><div class="team-h"><span>牌位與戰績</span><small>競技 = 本 act 最近 20 場競技 · 目前模式 = 最近 10 場</small></div>${m.teams.map(rankTeam).join('')}</div>
+      <div class="adv-rank"><div class="team-h"><span>牌位與戰績</span><small>競技 = 本 act 最近 20 場競技 · 目前模式 = 最近 10 場</small></div><div class="rk-cols">${m.teams.map(rankTeam).join('')}</div></div>
     </div>`;
 }
 

@@ -102,6 +102,12 @@ class TestFixtureMatch(unittest.TestCase):
         self.assertEqual(self.p['board'][ME]['hsk'], 11)
         self.assertLessEqual(self.p['board'][ME]['hsk'], self.p['board'][ME]['k'])
 
+    def test_round_kills(self):
+        # 每回合的擊殺 = kill_feed 裡自己殺敵方的；加起來就是 scoreboard 的 19 殺(fixture 有 3 次大招炸到自己，不算)
+        ks = [r['k'] for r in self.p['rounds']]
+        self.assertEqual(sum(ks), self.p['board'][ME]['k'])
+        self.assertTrue(all(0 <= k <= 5 for k in ks), ks)
+
     def test_hidden_players_matched_by_agent(self):
         # 隱藏名字的人 kill_feed 寫特務中文名 → 用 GLZ 那份的特務名對；同名特務用敵我分開
         hidden = [pu for pu, p in self.g.board.items() if p['agent'] == 'Vampire']   # 蕾娜，敵方

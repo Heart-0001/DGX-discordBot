@@ -790,11 +790,15 @@ html.pip #lol.valo .vd-back { display: none; }
 #lol.valo .tile.bad > b { color: #ff7a7a; }
 #lol.valo .am-h { color: var(--mut); font-size: .8em; margin-bottom: 4px; }
 #lol.valo .am-rounds { min-width: 0; }
-#lol.valo .rbars { display: flex; align-items: flex-end; gap: 3px; height: clamp(48px, 11vh, 90px); }
-#lol.valo .rb { position: relative; flex: 1 1 0; max-width: 2.2em; height: 100%; display: flex; flex-direction: column; justify-content: flex-end; align-items: center; padding-bottom: 1em; }
+#lol.valo .rbars { display: flex; align-items: flex-end; gap: 3px; height: clamp(120px, 20vh, 180px); }
+#lol.valo .rb { flex: 1 1 0; max-width: 2.6em; min-width: 0; height: 100%; display: flex; flex-direction: column; justify-content: flex-end; align-items: center; line-height: 1.15; }
 #lol.valo .rb i { display: block; width: 100%; min-height: 2px; border-radius: 3px 3px 0 0; background: linear-gradient(180deg, #ff4655, rgba(255, 70, 85, .35)); }
-#lol.valo .rb em { position: absolute; top: 0; font-style: normal; font-size: .62em; color: var(--mut); }
-#lol.valo .rb small { position: absolute; bottom: 0; font-size: .62em; }
+#lol.valo .rbc { flex: none; height: calc(100% - 6.4em); width: 100%; display: flex; flex-direction: column; justify-content: flex-end; align-items: center; }
+#lol.valo .rb em { font-style: normal; font-size: .62em; color: var(--mut); font-variant-numeric: tabular-nums; }
+#lol.valo .rb .rk { display: flex; flex-direction: column; align-items: center; gap: 1px; margin-top: 3px; height: 5.4em; color: #e8e8ee; }
+#lol.valo .rb .sk { width: 1em; height: 1em; display: block; }
+#lol.valo .rb .rk.hot { color: #ffe08a; filter: drop-shadow(0 0 3px rgba(255, 224, 138, .7)); }
+#lol.valo .rb small { font-size: .58em; color: var(--mut); }
 #lol.valo .rb:hover i { background: #ff8a94; }
 #lol.valo .adv-feed { display: flex; flex-direction: column; gap: 2px; overflow: hidden; font-size: .85em; }
 #lol.valo .kf { display: grid; grid-template-columns: 2.2em minmax(0, 1fr) auto minmax(0, 1fr); gap: 5px; align-items: center; white-space: nowrap; }
@@ -805,10 +809,12 @@ html.pip #lol.valo .vd-back { display: none; }
 #lol.valo .kf .hs { color: #ffe08a; }
 #lol.valo .adv-rank { border-radius: 8px; background: var(--panel); border: 1px solid var(--line); overflow: hidden; }
 #lol.valo .adv-rank .team-h { background: rgba(0, 0, 0, .25); color: var(--gold2); }
-#lol.valo .adv-rank .team { border: 0; border-radius: 0; background: none; }
+#lol.valo .adv-rank .team { border: 0; border-radius: 0; background: none; min-width: 0; }
+#lol.valo .rk-cols { display: grid; grid-template-columns: 1fr 1fr; }
+#lol.valo .rk-cols .team + .team { border-left: 1px solid var(--line); }
 #lol.valo .adv-rank .team.ally .lhead { color: #bcd9ff; }
 #lol.valo .adv-rank .team.enemy .lhead { color: #ffc4c4; }
-#lol.valo .rrow { --row: clamp(24px, 4.4vh, 40px); grid-template-columns: var(--row) minmax(6.5em, 1.2fr) minmax(6.5em, 1fr) minmax(7em, .9fr) 3em 3em 3em 3.2em 2.6em minmax(8em, 1.1fr); }
+#lol.valo .rrow { --row: clamp(24px, 4.4vh, 40px); gap: 6px; padding: 2px 8px; grid-template-columns: var(--row) minmax(4em, 1.2fr) minmax(5em, 1fr) minmax(5.5em, 1fr) 2.6em 2.6em 2.6em 2.8em 2.2em minmax(5em, 1fr); }
 #lol.valo .rrow .grp-c { background: rgba(255, 70, 85, .07); text-align: center; }
 #lol.valo .rrow.lhead span:nth-child(n+5):nth-child(-n+9) { text-align: center; }
 #lol.valo .rrow .c-name .cn { margin-left: .5em; color: var(--mut); }
@@ -819,7 +825,10 @@ html.pip #lol.valo .vd-back { display: none; }
   #lol.valo .adv-mid { grid-template-columns: 1fr; }
   #lol.valo .adv-me { grid-template-columns: auto minmax(0, 1fr); }
   #lol.valo .am-rounds { grid-column: 1 / -1; }
-  #lol.valo .rrow { grid-template-columns: var(--row) minmax(6.5em, 1.2fr) minmax(6.5em, 1fr) minmax(7em, .9fr) 3em 3em 3em 3.2em 2.6em; }
+}
+/* 牌位左右排，每邊半寬：1500 以下塞不下「目前模式」 */
+@media (max-width: 1500px) {
+  #lol.valo .rrow { grid-template-columns: var(--row) minmax(4em, 1.2fr) minmax(5em, 1fr) minmax(5.5em, 1fr) 2.6em 2.6em 2.6em 2.8em 2.2em; }
   #lol.valo .rrow .c-mode, #lol.valo .rrow.lhead span:last-child { display: none; }
 }
 html.pip #lol.valo .adv-mid, html.pip #lol.valo .adv-rank, html.pip #lol.valo .arow .c-wpn, html.pip #lol.valo .arow .c-ult, html.pip #lol.valo .arow .c-kd, html.pip #lol.valo .arow.lhead { display: none; }

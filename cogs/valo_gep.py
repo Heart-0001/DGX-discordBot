@@ -189,7 +189,13 @@ class GepMatch:
         # 敵方的錢、誰帶包遊戲內 TAB 看不到 → 不給(畫面不能比遊戲多給資訊，Riot 第三方工具規範)
         board = {pu: {**p, 'hsk': hsk.get(pu, 0)} if p['ally'] else {**p, 'hsk': hsk.get(pu, 0), 'money': None, 'spike': False}
                  for pu, p in self.board.items()}
-        rounds = [self.reports[n] for n in sorted(self.reports)]
+        # 每回合我殺了幾個(畫面上每回合傷害柱下面標)；自殺 / 殺隊友不算，跟 scoreboard 一樣
+        me = next((pu for pu, p in self.board.items() if p['me']), None)
+        rk: dict[int, int] = {}
+        for f in self.feed:
+            if me and f['at'] != f['vt'] and who.get((f['a'], f['at'])) == me:
+                rk[f['n']] = rk.get(f['n'], 0) + 1
+        rounds = [{**self.reports[n], 'k': rk.get(n, 0)} for n in sorted(self.reports)]
         tot = None
         if rounds:
             t = {k: sum(r[k] for r in rounds) for k in ('dmg', 'hit', 'hs', 'bs', 'ls', 'recv', 'abil')}

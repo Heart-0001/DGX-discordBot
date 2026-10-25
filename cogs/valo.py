@@ -34,6 +34,8 @@ log = logging.getLogger(__name__)
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TRACK_FILE = os.path.join(ROOT, 'data', 'valo_tracked.json')
+POSTED_FILE = os.path.join(ROOT, 'data', 'valo_posted.json')   # 對局 → 已經發過的頻道(同場多人被追蹤只發一則)
+POSTED_KEEP = 100
 CONTENT_FILE = os.path.join(ROOT, 'data', 'valo_content.json')
 HENRIK = 'https://api.henrikdev.xyz'
 VAPI = 'https://valorant-api.com/v1'
@@ -206,6 +208,8 @@ class ValoCog(commands.Cog):
         self._http: Optional[aiohttp.ClientSession] = None
         self._task: Optional[asyncio.Task] = None
         self.tracked: dict[str, dict] = self._load_tracked()
+        self._posted: dict[str, list] = self._load_posted()
+        self._post_lock = asyncio.Lock()
         self.link: Optional[RiotLink] = None
         # Activity 即時畫面(valo.js)：state 每變一次 version +1，WebSocket 據此推送
         self.version = 0
@@ -267,6 +271,30 @@ class ValoCog(commands.Cog):
         with open(TRACK_FILE + '.tmp', 'w', encoding='utf-8') as f:
             json.dump(self.tracked, f, ensure_ascii=False, indent=1)
         os.replace(TRACK_FILE + '.tmp', TRACK_FILE)
+
+    @staticmethod
+    def _load_posted() -> dict:
+        try:
+            with open(POSTED_FILE, encoding='utf-8') as f:
+                return json.load(f)
+        except (OSError, ValueError):
+            return {}
+
+    def _mark_posted(self, mid: str, cid: int):
+        self._posted.setdefault(mid, []).append(cid)
+        for k in list(self._posted)[:-POSTED_KEEP]:
+            del self._posted[k]
+        with open(POSTED_FILE + '.tmp', 'w', encoding='utf-8') as f:
+            json.dump(self._posted, f)
+        os.replace(POSTED_FILE + '.tmp', POSTED_FILE)
+
+    def _track_channels(self, t: dict) -> list:
+        return [c for c in (self.bot.get_channel(cid) for cid in self._channels(t).values()) if c]
+
+    def _all_posted(self, t: dict, mid: str) -> bool:
+        """同場另一位被追蹤的人已經把這場發到這個人所有的頻道了。"""
+        chs = self._track_channels(t)
+        return bool(chs) and all(c.id in self._posted.get(mid, []) for c in chs)
 
     # ── Activity 即時畫面：輪詢 ──
     def _set(self, **kw):
@@ -533,8 +561,8 @@ class ValoCog(commands.Cog):
             emb.add_field(name='最近對戰', value='沒有資料', inline=False)
         return emb
 
-    def _rich_embed(self, e: dict, title: str) -> discord.Embed:
-        """賽後完整計分板(eog_table 的輸出)：valo-track 貼文與 /valo 單場詳細共用。"""
+    def _rich_embed(self, e: dict, title: str, marks: frozenset = frozenset()) -> discord.Embed:
+        """賽後完整計分板(eog_table 的輸出)：valo-track 貼文與 /valo 單場詳細共用。marks = 也要標 ▶ 的人(同場被追蹤的)。"""
         mine = next((t for t in e['teams'] if t['mine']), None)
         won = mine['won'] if mine else None
         color = COLOR_DRAW if won is None else (COLOR_WIN if won else COLOR_LOSS)
@@ -573,7 +601,7 @@ class ValoCog(commands.Cog):
                 tags = ''.join(x for x in ((f" [組隊{p['party']}]" if p.get('party') else ''), (' ⭐MVP' if p['mvp'] else ''),
                                            (' 🎮' if p.get('platform') and p['platform'] != 'pc' else ''),
                                            (f" 💤AFK {p['afk']}回" if p.get('afk') else '')) if x)
-                l1 = (f"{'▶ ' if p['me'] else ''}**{_esc(p['agent'])}** {who(p)}{tags}　{p['k']}/{p['d']}/{p['a']}　"
+                l1 = (f"{'▶ ' if p['me'] or p.get('puuid') in marks else ''}**{_esc(p['agent'])}** {who(p)}{tags}　{p['k']}/{p['d']}/{p['a']}　"
                       + (f"ACS {round(p['score'] / p['rounds'])}・ADR {round(p['dmg'] / p['rounds'])}" if rb
                          else f"分數 {p['score']}・傷害 {p['dmg']}")
                       + f"・HS {p['hs']}%" + (f"・KAST {p['kast']}%" if p.get('kast') is not None else ''))
@@ -1038,6 +1066,11 @@ class ValoCog(commands.Cog):
         new = ids[ids.index(t['last']) + 1:] if t.get('last') in ids else ids[-1:]
         log.info(f"🔫 追蹤 {t['name']}（Riot）：新場次 {len(new)} 場 {[m[:8] for m in new]}")
         for mid in new:
+            if self._all_posted(t, mid):
+                log.info(f"🔫 追蹤 {t['name']}：{mid[:8]} 同場的人已經發過了")
+                t['last'] = mid
+                self._save_tracked()
+                continue
             d = await self.link._paced(f'/match-details/v1/matches/{mid}')
             if not d or not (d.get('matchInfo') or {}).get('isCompleted', True):
                 log.info(f"🔫 追蹤 {t['name']}：{mid[:8]} 還沒結算，下次再查")
@@ -1060,14 +1093,21 @@ class ValoCog(commands.Cog):
             await asyncio.sleep(20)
 
     async def _post_match(self, t: dict, puuid: str, m: Optional[dict] = None, riot: Optional[dict] = None) -> bool:
-        """賽後貼文。riot = Riot match-details(小帳查的，優先)；m = HenrikDev v4(退路)。"""
-        chs = [c for c in (self.bot.get_channel(cid) for cid in self._channels(t).values()) if c]
+        """賽後貼文。riot = Riot match-details(小帳查的，優先)；m = HenrikDev v4(退路)。
+        同一場有好幾個被追蹤的人：第一個查到的人發一則、同場被追蹤的都標 ▶，其他人輪到時看到發過就跳過(避免洗版)。"""
+        mid = (riot.get('matchInfo') or {}).get('matchId', '') if riot is not None else m['metadata']['match_id']
+        async with self._post_lock:          # 輪詢和 _track_now 可能同時查到同一場
+            if self._all_posted(t, mid):
+                log.info(f"🔫 追蹤 {t['name']}：{mid[:8]} 同場的人已經發過了")
+                return True
+            return await self._post_match_locked(t, puuid, mid, m, riot)
+
+    async def _post_match_locked(self, t: dict, puuid: str, mid: str, m: Optional[dict], riot: Optional[dict]) -> bool:
+        chs = [c for c in self._track_channels(t) if c.id not in self._posted.get(mid, [])]
         if riot is not None:
-            mid = (riot.get('matchInfo') or {}).get('matchId', '')
             e = await self._riot_eog(riot, puuid)
             s = riot_summarize(e, puuid)
         else:
-            mid = m['metadata']['match_id']
             s = summarize(m, puuid, self.content)
             # 牌位：HenrikDev 對戰資料裡非競技模式一律 0 → 小帳/PC 有 token 就查 10 人 mmr，否則至少補被追蹤的這位
             tiers, rr = {}, {}
@@ -1087,19 +1127,25 @@ class ValoCog(commands.Cog):
             res = s['score'] or '結束'
         else:
             res = '平手' if s['draw'] else ('勝利' if s['won'] else ('落敗' if s['won'] is False else '結束'))
-        if e['teams']:
-            emb = self._rich_embed(e, f"🔫 {_esc(t['name'])} 剛打完一場：{res}")
-        else:
-            emb = discord.Embed(title=f"🔫 {_esc(t['name'])} 剛打完一場：{res}", color=color, description=self._match_line(s))
         icon = (self.content['agents'].get(s['agentId']) or {}).get('icon')
-        if icon:
-            emb.set_thumbnail(url=icon)
+        players = [p for tm in e['teams'] for p in tm['players']]
         ok = False
-        for ch in chs:   # 每個伺服器各發一份
+        for ch in chs:   # 每個伺服器各發一份；同場在這個伺服器也被追蹤的人一起標出來
+            gid = str(getattr(getattr(ch, 'guild', None), 'id', ''))
+            marks = frozenset(p['puuid'] for p in players if p.get('puuid') != puuid and p.get('puuid') in self.tracked
+                              and gid in self._channels(self.tracked[p['puuid']]))
+            who = '、'.join([_esc(t['name'])] + [_esc(self.tracked[p['puuid']]['name']) for p in players if p.get('puuid') in marks])
+            if e['teams']:
+                emb = self._rich_embed(e, f"🔫 {who} 剛打完一場：{res}", marks)
+            else:
+                emb = discord.Embed(title=f"🔫 {who} 剛打完一場：{res}", color=color, description=self._match_line(s))
+            if icon:
+                emb.set_thumbnail(url=icon)
             try:
                 await ch.send(embed=emb, view=self._select(t['region'], puuid, [s]))
                 ok = True
-                log.info(f"🔫 追蹤 {t['name']}：{mid[:8]} 已發到 #{ch.name}")
+                self._mark_posted(mid, ch.id)
+                log.info(f"🔫 追蹤 {t['name']}：{mid[:8]} 已發到 #{ch.name}" + (f"（同場 {len(marks)} 人一起標）" if marks else ''))
             except discord.HTTPException as e:
                 log.warning(f'🔫 追蹤通知發送失敗 <#{ch.id}>: {e!r}')
         return ok

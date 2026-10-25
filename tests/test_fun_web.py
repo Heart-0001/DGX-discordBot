@@ -411,3 +411,64 @@ def test_lcu_arena_scored_by_placement(env):
     assert asyncio.run(fun._check_lcu()) == 1
     (grant,) = [m for u, m in bot.cogs['ActLiveCog'].user_msgs if u == UID and m['what'] == 'grant']
     assert grant['data']['queue'] == '鬥魂競技場' and grant['data']['score'] == 8 and fun.tickets(UID) == 4
+
+
+# ── 其他玩家自己打的大混戰(透過 PC 客戶端查他的對戰紀錄) ──
+FRIEND_PU = '0459f2da-6c61-5613-ab47-a08b41e36f5f'
+
+
+class OthersPc(FakePc):
+    def __init__(self, friends, histories, details):
+        super().__init__([], details)
+        self.friends, self.histories = friends, histories
+
+    async def lcu(self, path, timeout=8):
+        self.calls.append(path)
+        if path == '/lol-chat/v1/friends':
+            return self.friends
+        if '/products/lol/' in path and 'current-summoner' not in path:
+            pu = path.split('/products/lol/')[1].split('/')[0]
+            h = self.histories.get(pu)
+            return {'games': {'games': h}} if h is not None else None
+        return await super().lcu(path, timeout)
+
+
+SOLO = [('朋友', 100, 10, 2, 15, 40000, True), ('路人', 100, 3, 6, 10, 15000, True), ('對手', 200, 8, 9, 5, 30000, False)]
+
+
+def test_others_mayhem_found_through_friend_history(env):
+    bot, web = env
+    fun = bot.cogs['FunCog']
+    _link(bot, 222, '朋友', since=10_000)
+    old = _game(10, 5_000_000, SOLO)                 # 綁定前 → 不發
+    a, b = _game(11, 20_000_000, SOLO), _game(12, 30_000_000, SOLO)
+    pc = OthersPc([{'gameName': '朋友', 'gameTag': 'tw2', 'puuid': FRIEND_PU}, {'gameName': '別人', 'gameTag': 'x', 'puuid': 'p'}],
+                  {FRIEND_PU: [b, a, old]}, {10: old, 11: a, 12: b})
+    bot.cogs['LolCog'].pc = pc
+    asyncio.run(fun._check_others())
+    acc = fun.user(222)['lol'][0]
+    assert acc['lcu_puuid'] == FRIEND_PU and acc['lcu_from'] == 30_000
+    assert fun.tickets(222) == 8                     # 兩場都滿分
+    assert f'/lol-match-history/v1/products/lol/{FRIEND_PU}/matches?begIndex=0&endIndex=99' in pc.calls
+    # 再跑不重複；PC 主人自己的紀錄之後看到同一場也不重發
+    asyncio.run(fun._check_others())
+    bot.cogs['LolCog'].pc = FakePc([b], {12: b})
+    asyncio.run(fun._check_lcu())
+    assert fun.tickets(222) == 8
+    assert sum(c == '/lol-chat/v1/friends' for c in pc.calls) == 1
+
+
+def test_others_detail_missing_retries_and_not_friend_skipped(env):
+    bot, web = env
+    fun = bot.cogs['FunCog']
+    _link(bot, 222, '朋友', since=10_000)
+    _link(bot, 333, '陌生人', since=10_000)
+    a = _game(21, 20_000_000, SOLO)
+    pc = OthersPc([{'gameName': '朋友', 'gameTag': 'TW2', 'puuid': FRIEND_PU}], {FRIEND_PU: [a]}, {})
+    bot.cogs['LolCog'].pc = pc
+    asyncio.run(fun._check_others())
+    assert fun.tickets(222) == 0 and fun.user(222)['lol'][0]['lcu_from'] == 10_000     # 細節還沒有 → 不前進
+    assert 'lcu_puuid' not in fun.user(333)['lol'][0]
+    pc.details[21] = a
+    asyncio.run(fun._check_others())
+    assert fun.tickets(222) == 4

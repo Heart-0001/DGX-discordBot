@@ -293,8 +293,19 @@ class LyricsCog(commands.Cog):
     async def _h_config(self, request):
         return web.json_response({'client_id': str(self.bot.application_id or '')})
 
-    def _auto_mode(self) -> str:
-        """/act 自動模式：哪個遊戲正在對局就顯示哪個；結算畫面保留 EOG_KEEP 秒；都沒有 → 歌詞。"""
+    async def _owner_watching(self, cid: int) -> bool:
+        """這個頻道開著的 Activity 裡有沒有 bot 擁有者本人(已登入)。"""
+        act = self.bot.get_cog('ActLiveCog')
+        for uid in (act.users_in(cid) if act else ()):
+            if await self.bot.is_owner(discord.Object(id=uid)):
+                return True
+        return False
+
+    async def _auto_mode(self, cid: int) -> str:
+        """/act 自動模式：哪個遊戲正在對局就顯示哪個；結算畫面保留 EOG_KEEP 秒；都沒有 → 歌詞。
+        LoL / Valo 是擁有者本人的對局 → 只有他在這個頻道的 Activity 裡才切(不然別的伺服器也看得到他的戰況)。"""
+        if not await self._owner_watching(cid):
+            return 'lyrics'
         now = time.time()
         for name, live, mode in (('LolCog', ('champselect', 'ingame'), 'lol'), ('ValoCog', ('pregame', 'coregame'), 'valo')):
             cog = self.bot.get_cog(name)
@@ -317,7 +328,7 @@ class LyricsCog(commands.Cog):
         mode = modes.get(cid) or 'lyrics'
         auto = mode == 'auto'
         if auto:
-            mode = self._auto_mode()
+            mode = await self._auto_mode(cid)
         if cid and hasattr(self.bot, 'activity_seen'):
             self.bot.activity_seen[cid] = time.monotonic()
         if request.query.get('first'):

@@ -178,6 +178,10 @@ class ActLiveCog(commands.Cog):
             self._meta.pop(ws, None)
         return ws
 
+    def users_in(self, cid: int) -> set[int]:
+        """這個頻道開著 Activity 且已登入的人(LyricsCog 的 /act 自動模式用)。"""
+        return {self._meta[w][1] for w in self._socks.get(cid, ()) if not w.closed and w in self._meta and self._meta[w][1]}
+
     # ── 活動推播(cogs/fun_web.py 用) ──
     async def send_user(self, uid: int, msg: dict):
         """推給這個人開著的所有 Activity。"""

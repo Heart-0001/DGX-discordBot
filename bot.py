@@ -3,7 +3,6 @@ import json
 import logging
 import os
 import sys
-import time
 from datetime import datetime, timezone
 import discord
 from discord.ext import commands
@@ -40,16 +39,19 @@ except (OSError, ValueError):
     bot.activity_modes = {}
 
 
-bot.activity_seen = {}   # 頻道 → 最後一次有開著的 Activity 來問模式的時間
+bot.activity_seen = {}   # 頻道 → 最後一次有開著的 Activity 來問模式的時間(lyrics 寫；判斷開著改看 act_live 的連線)
 
 
 def activity_open(interaction) -> bool:
-    """這個頻道(或使用者所在語音頻道)的 Activity 是不是正開著(畫面每 3 秒會來問一次模式)。"""
+    """打指令的這個人自己是不是正開著 Activity(看 act_live 已登入的 WebSocket；關掉 Activity 連線馬上斷)。
+    以前用「這頻道 10 秒內有人來問模式」：剛關掉又打 /act 會被當成還開著，別人開著也會擋到自己。"""
+    act = bot.get_cog('ActLiveCog')
+    if not act:
+        return False
     keys = {interaction.channel_id}
     if interaction.user.voice and interaction.user.voice.channel:
         keys.add(interaction.user.voice.channel.id)
-    now = time.monotonic()
-    return any(now - bot.activity_seen.get(k, -1e9) < 10 for k in keys)
+    return any(interaction.user.id in act.users_in(k) for k in keys - {None})
 
 
 bot.activity_open = activity_open

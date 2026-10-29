@@ -175,6 +175,9 @@ function bindQueue() {
   vol.addEventListener('change', () => { volDrag = false; send({ type: 'music', action: 'volume', level: +vol.value }); });
   $('c-play').onclick = () => send({ type: 'music', action: queue && queue.paused ? 'resume' : 'pause' });
   $('c-skip').onclick = () => send({ type: 'music', action: 'skip' });
+  // 遊戲畫面的小歌詞條也留一組 ⏸ ⏭
+  $('m-play').onclick = $('c-play').onclick;
+  $('m-skip').onclick = $('c-skip').onclick;
   $('q-list').addEventListener('click', (ev) => {
     const b = ev.target.closest('button[data-i]');
     if (b && !b.disabled) send({ type: 'music', action: 'remove', index: +b.dataset.i, url: b.dataset.u });
@@ -208,6 +211,7 @@ function renderQueue() {
   if (q && q.volume != null && !volDrag) { $('vol-in').value = q.volume; showVol(q.volume); }   // 別人調的也跟著動
   $('c-play').textContent = q && q.paused ? '▶' : '⏸';
   $('c-play').title = q && q.paused ? '繼續播放' : '暫停';
+  $('m-play').textContent = $('c-play').textContent;
   if (!q) return;
   $('q-now').innerHTML = q.current ? `<div class="qh">正在播放${q.repeat !== 'off' ? `<small>循環 ${q.repeat === 'one' ? '單曲' : '全部'}</small>` : ''}</div><ul>${songRow(q.current)}</ul>`
     : '<div class="qh dim">目前沒有在播放，輸入歌名就會開始播</div>';

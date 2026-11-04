@@ -16,6 +16,7 @@ import logging
 import os
 import re
 import time
+from datetime import datetime
 from typing import Optional
 
 import discord
@@ -48,6 +49,14 @@ DAILY_TICKETS = 1
 RECENT_GRANTS = 10
 GAMES = {'lol': 'LoL', 'valo': 'Valorant'}
 LAUNCH_ID = 'fun:launch'
+
+
+def _iso_ts(s) -> float:
+    """HenrikDev 的 started_at('2026-10-24T17:43:47.41Z')→ epoch 秒；沒有或格式不對回 0。"""
+    m = re.match(r'(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)', str(s or ''))
+    if not m:
+        return 0.0
+    return datetime.fromisoformat(m.group(1) + '+00:00').timestamp()
 
 
 class FunError(Exception):
@@ -99,7 +108,7 @@ class FunCog(commands.Cog):
         d.setdefault('lcu_seen', [])          # 客戶端對戰紀錄看過的 gameId
         now = time.time()
         for u in d['users'].values():         # 舊資料補欄位：since = 從什麼時候開始算(綁定時間)
-            for a in u.get('lol', []):
+            for a in u.get('lol', []) + u.get('valo', []):
                 a.setdefault('since', now)
                 a.setdefault('seen', [])
         return d
@@ -227,8 +236,7 @@ class FunCog(commands.Cog):
         if owner:
             raise FunError(f'這個帳號已經被 {self.name_of(owner)} 綁走了；如果那不是他的帳號，請管理員處理')
         acc['last'] = None          # 第一次查只記下最新一場，不補發綁定前的對局
-        if game == 'lol':
-            acc.update(since=time.time(), seen=[])   # 客戶端那條路：只算綁定之後結束的對局
+        acc.update(since=time.time(), seen=[])   # 只算綁定之後的對局；seen 記處理過的場次去重
         u[game].append(acc)
         self.save()
         log.info(f"🎟️ {self.name_of(uid)} 綁定 {GAMES[game]} {acc['name']}#{acc['tag']}")
@@ -558,25 +566,30 @@ class FunCog(commands.Cog):
         ms = await api.matches(acc['region'], acc['name'], acc['tag'], 3, background=True, ttl=30)
         if ms is None:
             return
-        done = [m for m in ms if (m.get('metadata') or {}).get('is_completed', True)
-                and (m.get('metadata') or {}).get('match_id')]
-        done.sort(key=lambda m: (m.get('metadata') or {}).get('started_at') or '')
-        ids = [m['metadata']['match_id'] for m in done]
-        if acc.get('last') is None:
-            acc['last'] = ids[-1] if ids else ''
-            self.save()
-            return
+        done = [(_iso_ts(m['metadata'].get('started_at')), m) for m in ms
+                if (m.get('metadata') or {}).get('is_completed', True) and (m.get('metadata') or {}).get('match_id')]
+        done = sorted(((t, m) for t, m in done if t), key=lambda x: x[0])   # 沒有開始時間的判斷不了新舊 → 不算
         if done:   # 改過名 → 用對戰裡的新名字(HenrikDev 用名字查)
-            me = next((p for p in done[-1].get('players') or [] if p.get('puuid') == acc['puuid']), None)
+            me = next((p for p in done[-1][1].get('players') or [] if p.get('puuid') == acc['puuid']), None)
             if me and (me.get('name'), me.get('tag')) != (acc['name'], acc['tag']) and me.get('name'):
                 acc['name'], acc['tag'] = me['name'], me.get('tag', acc['tag'])
-        by_id = {m['metadata']['match_id']: m for m in done}
-        for mid in self._new_ids(ids, acc['last']):
-            api.remember_match(acc['region'], by_id[mid])
-            s = summarize(by_id[mid], acc['puuid'], valo.content)
-            if s:
-                await self._grant(uid, acc, valo_score(s))
-            acc['last'] = mid
+        # HenrikDev 偶爾回殘缺 / 過期的列表(2026-11-04 把 10/06–10/26 的舊場次重發了一輪)，不能靠「上次最後一場」判斷新舊：
+        # 處理過的場次記在 seen；比綁定時間或已處理的最新一場還早開始的一律不算
+        seen = acc.setdefault('seen', [])
+        changed = False
+        for t, m in done:
+            mid = m['metadata']['match_id']
+            if mid in seen:
+                continue
+            if t > max(acc.get('since', 0), acc.get('newest', 0)):
+                api.remember_match(acc['region'], m)
+                s = summarize(m, acc['puuid'], valo.content)
+                if s:
+                    await self._grant(uid, acc, valo_score(s))
+                acc['newest'] = t
+            self._mark_seen(acc, mid)
+            changed = True
+        if changed:
             self.save()
 
     async def _grant(self, uid: int, acc: dict, r: dict):

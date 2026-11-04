@@ -472,3 +472,72 @@ def test_others_detail_missing_retries_and_not_friend_skipped(env):
     pc.details[21] = a
     asyncio.run(fun._check_others())
     assert fun.tickets(222) == 4
+
+
+class FakeHenrik:
+    """HenrikDev 假 API：每次 matches() 照順序吐下一份列表(模擬 2026-11-04 回殘缺 / 過期列表)。"""
+
+    def __init__(self, *lists):
+        self.lists = list(lists)
+
+    async def matches(self, *a, **kw):
+        return self.lists.pop(0) if self.lists else []
+
+    def remember_match(self, region, m):
+        pass
+
+
+def _vm(mid, started):
+    return {'metadata': {'match_id': mid, 'started_at': started, 'is_completed': True}, 'players': []}
+
+
+def _valo_env(bot, monkeypatch, api, since):
+    fun = bot.cogs['FunCog']
+    bot.cogs['ValoCog'].api = api
+    acc = {'name': 'Heart', 'tag': '21417', 'puuid': 'v-1', 'region': 'ap', 'since': since, 'seen': []}
+    fun.user(UID)['valo'].append(acc)
+    got = []
+
+    async def grant(uid, a, r):
+        got.append(r)
+    monkeypatch.setattr(fun, '_grant', grant)
+    monkeypatch.setattr(cogs.fun, 'summarize', lambda m, puuid, content: m['metadata']['match_id'])
+    monkeypatch.setattr(cogs.fun, 'valo_score', lambda s: s)
+    return fun, acc, got
+
+
+def test_valo_broken_lists_do_not_regrant_old_matches(env, monkeypatch):
+    # 11/04 實際發生：A B C 都發過了，API 先回少了 C 的列表、再回別的組合、最後回完整的 → 舊版每次都重發
+    bot, web = env
+    a, b, c = (_vm('A', '2026-10-24T17:07:39.277Z'), _vm('B', '2026-10-24T17:43:47.41Z'),
+               _vm('C', '2026-10-24T17:58:59.142Z'))
+    d = _vm('D', '2026-11-05T12:00:00Z')
+    api = FakeHenrik([a, b, c], [a, b], [a], [a, b, c], [b, c, d], [d, c, b])
+    fun, acc, got = _valo_env(bot, monkeypatch, api, since=cogs.fun._iso_ts('2026-10-24T17:00:00Z'))
+    asyncio.run(fun._check_valo(UID, acc))
+    assert got == ['A', 'B', 'C']
+    for _ in range(5):
+        asyncio.run(fun._check_valo(UID, acc))
+    assert got == ['A', 'B', 'C', 'D']           # 只有真的新場次 D 會多發一次
+
+
+def test_valo_matches_before_binding_or_older_than_newest_not_counted(env, monkeypatch):
+    bot, web = env
+    old = _vm('OLD', '2026-10-06T14:57:58Z')       # 德語艾瑪那種：綁定前打的
+    new = _vm('NEW', '2026-11-05T12:00:00Z')
+    late = _vm('LATE', '2026-11-05T11:00:00Z')     # 比已處理最新一場還早開始、之後才出現在列表
+    api = FakeHenrik([old], [old, new], [late, new], [_vm('X', None)])
+    fun, acc, got = _valo_env(bot, monkeypatch, api, since=cogs.fun._iso_ts('2026-10-21T00:00:00Z'))
+    for _ in range(4):
+        asyncio.run(fun._check_valo(UID, acc))
+    assert got == ['NEW']
+    assert set(acc['seen']) == {'OLD', 'NEW', 'LATE'}
+
+
+def test_wallet_migration_adds_since_and_seen_to_valo(env):
+    bot, web = env
+    fun = bot.cogs['FunCog']
+    fun.user(UID)['valo'].append({'name': 'H', 'tag': '1', 'puuid': 'p', 'region': 'ap', 'last': 'x'})
+    fun.save()
+    a = fun._load()['users'][str(UID)]['valo'][0]
+    assert a['seen'] == [] and a['since'] > 0

@@ -513,6 +513,15 @@ class MusicCog(commands.Cog):
     def _after_play(self, error, guild_id: int, voice_client: discord.VoiceClient):
         if error:
             log.error(f'播放回呼錯誤: {error}')
+        # discord.py 2.7 AudioPlayer 在「斷線後等不到重連」(Aborting playback)那條路
+        # 直接 return、沒 stop() → 執行緒死了 is_playing() 卻永遠 True，之後 /play 全被
+        # 塞進隊列沒人起播(2026-11-04 整天無聲)。after 在播放執行緒裡呼叫，趁這時把它標成結束。
+        player = getattr(voice_client, '_player', None)
+        if player is not None and player is threading.current_thread():
+            try:
+                player.stop()
+            except Exception as e:
+                log.error(f'標記播放器結束失敗: {e!r}')
         asyncio.run_coroutine_threadsafe(
             self._play_next(guild_id, voice_client), self.bot.loop
         )
@@ -712,9 +721,18 @@ class MusicCog(commands.Cog):
                 log.error(f'Autoplay 預載失敗: {e}')
         return result
 
+    PLAY_NEXT_RECONNECT_WAIT = 30.0   # 秒；discord.py 自己重連通常幾秒內完成
+
     async def _play_next(self, guild_id: int, voice_client: discord.VoiceClient):
         if not voice_client.is_connected():
-            return
+            # 語音 WS 掉線重連中(1006 之類)：等它連回來再接下一首，別直接放棄
+            deadline = time.monotonic() + self.PLAY_NEXT_RECONNECT_WAIT
+            while not voice_client.is_connected() and time.monotonic() < deadline:
+                await asyncio.sleep(1)
+            if not voice_client.is_connected():
+                log.warning('下一首：語音未連線，交給 watchdog')
+                return
+            log.info('下一首：語音已重連，繼續播放')
 
         state = self.get_state(guild_id)
         # 捕捉 /stop token：本函式任何 await 後若它已 +1，代表 /stop 介入 → 放棄
@@ -1385,6 +1403,7 @@ class MusicCog(commands.Cog):
     async def _watchdog_loop(self):
         """每 3 秒檢查一次:還想播,但語音掉線 → 指數退避重連。"""
         attempts: dict = {}
+        stalled: dict = {}
         while True:
             await asyncio.sleep(3)
             for guild_id in list(self._states.keys()):
@@ -1398,6 +1417,19 @@ class MusicCog(commands.Cog):
                     continue
                 if guild.voice_client is not None and guild.voice_client.is_connected():
                     attempts[guild_id] = 0
+                    # 保險：連著線、隊列有歌，卻連兩輪(~6s)什麼都沒在播 → 補起播
+                    vc = guild.voice_client
+                    if state.queue and not (vc.is_playing() or vc.is_paused()):
+                        stalled[guild_id] = stalled.get(guild_id, 0) + 1
+                        if stalled[guild_id] >= 2:
+                            stalled[guild_id] = 0
+                            log.warning(f'🔁 隊列有 {len(state.queue)} 首但沒在播 [{guild.name}]，補起播')
+                            try:
+                                await self._play_next(guild_id, vc)
+                            except Exception as e:
+                                log.error(f'補起播失敗 [{guild.name}]: {e!r}')
+                    else:
+                        stalled[guild_id] = 0
                     continue
                 # 掉線且沒目標頻道 → 無從重連,放棄
                 if state.voice_channel_id is None:

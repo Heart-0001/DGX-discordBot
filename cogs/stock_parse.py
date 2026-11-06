@@ -18,6 +18,8 @@ OPEN_DELAY = timedelta(minutes=1)      # 開盤後多久發開盤訊息(等第�
 CLOSE_DELAY = timedelta(minutes=2)     # 收盤後多久發收盤訊息(等最後一盤撮合)
 HOLIDAY_AFTER = timedelta(minutes=40)  # 開盤這麼久還沒有今天的資料 → 當天休市
 CLOSE_GIVEUP = timedelta(hours=3)      # 收盤訊息最晚補發到收盤後幾小時(bot 重啟用)
+MIS_CLOSE_WAIT = timedelta(minutes=5)  # 台股 mis 收盤後這麼久還沒有收盤資料 → 改用 Yahoo / 盤後資料
+CLOSE_STALE_AFTER = timedelta(hours=2)  # 備援都拿不到，收盤後這麼久才照舊資料發(標註資料可能不完整)
 
 # 指數：中文名 → (市場, 代號)。台股指數的 mis 代號 t00/o00，Yahoo 用 ^TWII/^TWOII
 INDICES = {
@@ -181,6 +183,32 @@ def parse_mis(row: dict) -> dict:
         'limit_up': _num(row.get('u')), 'limit_down': _num(row.get('w')),
         'at': at, 'currency': 'TWD',
     }
+
+
+def tw_close_from_yahoo(q: dict, c: Optional[dict], end: datetime) -> Optional[dict]:
+    """mis 卡住時用 Yahoo 的台股收盤(2026-11-06 實測收盤價對、量差不到 0.1%)。Yahoo 還沒到收盤時間 → None。"""
+    at = (c or {}).get('at')
+    if not c or not c.get('price') or not at or at < end or at.date() != end.date():
+        return None
+    vol = c.get('volume')
+    return {**q, 'price': c['price'], 'open': q.get('open') or c.get('open'),
+            'high': c.get('high') or q.get('high'), 'low': c.get('low') or q.get('low'),
+            'volume': round(vol / 1000) if vol else q.get('volume'), 'vol_unit': '張',
+            'at': at, 'src': 'Yahoo Finance'}
+
+
+def parse_tw_daily(rows, day, per_lot: int) -> Optional[dict]:
+    """證交所 STOCK_DAY / 櫃買 tradingStock 的個股日成交表 → 那一天的開高低收量(張)。
+    兩邊欄位順序一樣：日期(民國)、成交量、金額、開、高、低、收…；證交所的量是股(per_lot=1000)、櫃買是張(1)。"""
+    roc = f'{day.year - 1911}/{day.month:02d}/{day.day:02d}'
+    for r in rows or []:
+        if len(r) >= 7 and str(r[0]).strip() == roc:
+            v, _, o, h, lo, cl = (_num(str(x).replace(',', '')) for x in r[1:7])
+            if not cl:
+                return None   # 當天沒成交
+            return {'price': cl, 'open': o, 'high': h, 'low': lo,
+                    'volume': round(v / per_lot) if v else None, 'vol_unit': '張'}
+    return None
 
 
 def parse_yahoo(res: dict) -> dict:

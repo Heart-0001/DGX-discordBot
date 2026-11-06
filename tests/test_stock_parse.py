@@ -144,3 +144,55 @@ def test_render_history_png():
     assert png and png[:8] == b'\x89PNG\r\n\x1a\n'
     assert sp.render_history(pts[:1], 98, TP, '%Y/%m') is None
     assert set(sp.RANGES) == {'1d', '5d', '1mo', '1y', '5y'}
+
+
+def test_tw_close_from_yahoo_only_after_close():
+    end = datetime(2026, 11, 6, 13, 30, tzinfo=TP)
+    q = {'price': 1547.5, 'open': 1485.0, 'high': 1610.0, 'low': 1485.0, 'prev': 1650.0, 'volume': 6608,
+         'vol_unit': '張', 'at': datetime(2026, 11, 6, 13, 19, 46, tzinfo=TP)}
+    c = {'price': 1555.0, 'open': 1485.0, 'high': 1610.0, 'low': 1485.0, 'volume': 7671404,
+         'at': datetime(2026, 11, 6, 13, 30, 3, tzinfo=TP)}
+    y = sp.tw_close_from_yahoo(q, c, end)
+    assert y['price'] == 1555.0 and y['volume'] == 7671 and y['prev'] == 1650.0 and y['src'] == 'Yahoo Finance'
+    assert sp.tw_close_from_yahoo(q, {**c, 'at': datetime(2026, 11, 6, 13, 10, tzinfo=TP)}, end) is None
+    assert sp.tw_close_from_yahoo(q, {**c, 'at': datetime(2026, 11, 5, 13, 30, 3, tzinfo=TP)}, end) is None
+    assert sp.tw_close_from_yahoo(q, None, end) is None
+
+
+def test_parse_tw_daily_twse_and_tpex():
+    day = datetime(2026, 11, 6).date()
+    twse = [['115/11/05', '5,733,060', '9,653,784,640', '1,735.00', '1,755.00', '1,640.00', '1,650.00', '-135.00', '33,976', ''],
+            ['115/11/06', '7,676,494', '11,756,046,890', '1,485.00', '1,610.00', '1,485.00', '1,555.00', '-95.00', '35,424', '']]
+    r = sp.parse_tw_daily(twse, day, 1000)
+    assert r == {'price': 1555.0, 'open': 1485.0, 'high': 1610.0, 'low': 1485.0, 'volume': 7676, 'vol_unit': '張'}
+    tpex = [['115/11/06', '14,377', '7,387,830', '508.00', '529.00', '508.00', '512.00', '-52.00', '31,715']]
+    assert sp.parse_tw_daily(tpex, day, 1)['volume'] == 14377
+    assert sp.parse_tw_daily(twse[:1], day, 1000) is None          # 今天的還沒出來
+    assert sp.parse_tw_daily([['115/11/06', '0', '0', '--', '--', '--', '--', '0', '0']], day, 1000) is None
+    assert sp.parse_tw_daily(None, day, 1000) is None
+
+
+def test_tw_close_quote_fallback_order():
+    import asyncio
+    from types import SimpleNamespace
+    from cogs.stock import StockCog
+    end = datetime(2026, 11, 6, 13, 30, tzinfo=TP)
+    stale = {'price': 1547.5, 'prev': 1650.0, 'vol_unit': '張', 'at': datetime(2026, 11, 6, 13, 19, 46, tzinfo=TP)}
+    fresh = {**stale, 'price': 1555.0, 'at': datetime(2026, 11, 6, 13, 30, tzinfo=TP)}
+    yahoo = {'price': 1555.0, 'volume': 7671404, 'at': datetime(2026, 11, 6, 13, 30, 3, tzinfo=TP)}
+    official = {'price': 1555.0, 'volume': 7676, 'vol_unit': '張', 'src': '證交所盤後'}
+
+    def run(q, c, hm, off=None):
+        async def day(e, d):
+            return off
+        me = SimpleNamespace(_label=lambda e: '緯穎 6669', tw_official_day=day)
+        now = datetime(2026, 11, 6, *hm, tzinfo=TP)
+        return asyncio.run(StockCog._tw_close_quote(me, {'code': '6669'}, q, c, now, end))
+
+    assert run(fresh, None, (13, 32)) is fresh                       # mis 正常：直接用
+    assert run(stale, yahoo, (13, 32)) is None                       # 先給 mis 5 分鐘
+    assert run(stale, yahoo, (13, 35))['src'] == 'Yahoo Finance'
+    assert run(stale, None, (13, 50)) is None                        # 都沒有：繼續等，不發舊資料
+    r = run(stale, None, (14, 10), official)
+    assert r['src'] == '證交所盤後' and r['price'] == 1555.0 and r['at'] == end and r['prev'] == 1650.0
+    assert run(stale, None, (15, 31))['stale'] is True               # 等了 2 小時還是沒有才照舊發

@@ -261,9 +261,10 @@ class StockCog(commands.Cog):
         if kind != 'open' and w52[0] and w52[1]:
             emb.add_field(name='52 週區間', value=f'{sp.fmt_price(w52[0])} – {sp.fmt_price(w52[1])}')
         at = q.get('at')
-        src = '證交所' if t['market'] == 'TW' else 'Yahoo Finance'
+        src = q.get('src') or ('證交所' if t['market'] == 'TW' else 'Yahoo Finance')
         tzname = '台北' if t['market'] == 'TW' else '美東'
-        emb.set_footer(text=f"{mk['label']} · {src}" + (f" · {at.strftime('%m/%d %H:%M')} {tzname}" if at else ''))
+        emb.set_footer(text=f"{mk['label']} · {src}" + (f" · {at.strftime('%m/%d %H:%M')} {tzname}" if at else '')
+                       + (' · ⚠️ 證交所資料停在盤中，收盤數字可能不準' if q.get('stale') else ''))
         return emb
 
     def _range_embed(self, t: dict, q: dict, h: dict, rng: str) -> discord.Embed:
@@ -480,12 +481,56 @@ class StockCog(commands.Cog):
             if (not sp.traded_today(q, now) or q.get('open') is None) and now < start + timedelta(minutes=15):
                 continue   # 這檔今天還沒成交(冷門股/資料還沒到)：等一下，開盤 15 分鐘後照發
             for ev in due[k]:
-                if ev == 'close' and market == 'TW' and q.get('at') and q['at'] < end \
-                        and now < end + timedelta(minutes=20):
-                    continue   # 收盤集合競價還沒公布
-                if await self._post(e, q, charts.get(k), ev):
+                pq = q
+                if ev == 'close' and market == 'TW':
+                    pq = await self._tw_close_quote(e, q, charts.get(k), now, end)
+                    if pq is None:
+                        continue   # 收盤資料還沒到，下一輪再看
+                if await self._post(e, pq, charts.get(k), ev):
                     e.setdefault('sent', {})[ev] = today
                     self._save_tracked()
+
+    async def _tw_close_quote(self, e: dict, q: dict, c: Optional[dict], now: datetime,
+                              end: datetime) -> Optional[dict]:
+        """台股收盤要發的報價；None = 還沒拿到準的收盤資料、先不發。
+        順序：mis(已有收盤後的成交)→ Yahoo(時間已過收盤)→ 證交所/櫃買盤後日成交表。
+        2026-11-06 整個 mis 停在 13:19 沒再更新(連台積電)，原本等 20 分鐘就拿舊資料發，收盤價和量都錯。"""
+        if not q.get('at') or q['at'] >= end:
+            return q
+        if now < end + sp.MIS_CLOSE_WAIT:
+            return None   # 收盤集合競價可能還沒公布，先等 mis
+        y = sp.tw_close_from_yahoo(q, c, end)
+        if y:
+            log.info(f"📈 {self._label(e)} mis 停在 {q['at']:%H:%M:%S}，收盤改用 Yahoo")
+            return y
+        o = await self.tw_official_day(e, end.date())
+        if o:
+            log.info(f"📈 {self._label(e)} mis 停在 {q['at']:%H:%M:%S}，收盤改用{o['src']}")
+            return {**q, **o, 'at': end}
+        if now >= end + sp.CLOSE_STALE_AFTER:
+            log.warning(f"📈 {self._label(e)} 收盤資料一直拿不到(mis 停在 {q['at']:%H:%M:%S})，照舊資料發")
+            return {**q, 'stale': True}
+        return None
+
+    async def tw_official_day(self, e: dict, day) -> Optional[dict]:
+        """證交所 STOCK_DAY / 櫃買 tradingStock 的當天日成交(盤後才有，約 14 點後)。"""
+        if e.get('index'):
+            return None
+        for ex in ([e['ex']] if e.get('ex') in ('tse', 'otc') else ['tse', 'otc']):
+            if ex == 'otc':
+                d = await self._get_json(f"https://www.tpex.org.tw/www/zh-tw/afterTrading/tradingStock"
+                                         f"?code={e['code']}&date={day:%Y/%m/%d}&response=json", 120)
+                rows = (((d or {}).get('tables') or [{}])[0] or {}).get('data')
+                r = sp.parse_tw_daily(rows, day, 1)
+                src = '櫃買中心盤後'
+            else:
+                d = await self._get_json(f"https://www.twse.com.tw/exchangeReport/STOCK_DAY"
+                                         f"?response=json&date={day:%Y%m%d}&stockNo={e['code']}", 120)
+                r = sp.parse_tw_daily((d or {}).get('data'), day, 1000)
+                src = '證交所盤後'
+            if r:
+                return {**r, 'src': src}
+        return None
 
     async def _fetch(self, market: str, entries: list[dict]) -> tuple[dict, dict, Optional[dict]]:
         """({track_key: 報價}, {track_key: Yahoo 走勢}, 大盤報價)。"""
